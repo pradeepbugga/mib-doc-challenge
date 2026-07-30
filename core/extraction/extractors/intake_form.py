@@ -2,74 +2,57 @@ from ..utils import extract_regex
 
 
 def extract_intake_form(text: str) -> dict:
-    """
-    Extract fields from an intake form.
-
-    This stage only extracts values as they appear on the page.
-    Normalization and conflict resolution occur later.
-    """
+    """Extract fields from Form I-8090."""
 
     fields = {
-
-        "applicant": extract_regex(
-            r"(?:Applicant|Applicant Name|Name)\s*[:\-]\s*([^\n\r]+)",
-            text,
-        ),
-
         "case_id": extract_regex(
-            r"(?:Case ID|Case Number|Packet ID)\s*[:\-]\s*([A-Z0-9\-]+)",
+            r"Case\s+ID\s*:?\s*"
+            r"(MIB-\d+)"
+            r"(?=\s+Applicant\b|$)",
             text,
         ),
-
-        "species": extract_regex(
-            r"(?:Species|Species Code)\s*[:\-]\s*([^\n\r]+)",
+        "applicant": extract_regex(
+            r"Applicant\s*:?\s*"
+            r"(.+?)"
+            r"(?=\s+Species\s+Code\b|$)",
             text,
         ),
-
+        "species_code": extract_regex(
+            r"Species\s+Code\s*:?\s*"
+            r"([A-Z0-9_ -]+?)"
+            r"(?=\s+Home\s+World\b|$)",
+            text,
+        ),
         "home_world": extract_regex(
-            r"(?:Home World|Planet|Origin)\s*[:\-]\s*([^\n\r]+)",
+            r"Home\s+World\s*:?\s*"
+            r"(.+?)"
+            r"(?=\s+Visa\s+Class\b|$)",
             text,
         ),
-
-        "arrival_date": extract_regex(
-            r"(?:Arrival Date|Date of Arrival)\s*[:\-]\s*"
-            r"(\d{4}[-/]\d{1,2}[-/]\d{1,2}"
-            r"|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})",
-            text,
-        ),
-
-        "purpose": extract_regex(
-            r"(?:Purpose|Reason for Visit|Visit Purpose)\s*[:\-]\s*([^\n\r]+)",
-            text,
-        ),
-
         "visa_class": extract_regex(
-            r"(?:Visa Class|Visa Type)\s*[:\-]\s*([A-Z]{2}-?\d+)",
+            r"Visa\s+Class\s*:?\s*"
+            r"([A-Z0-9-]+)"
+            r"(?=\s+Sponsor\s+ID\b|$)",
             text,
         ),
-
         "sponsor_id": extract_regex(
-            r"(?:Sponsor ID|Sponsor)\s*[:\-]\s*(SPN[- ]?\d+)",
+            r"Sponsor\s+ID\s*:?\s*"
+            r"(SPN[- ]?\d+)"
+            r"(?=\s+Arrival\s+Date\b|$)",
             text,
         ),
-
-        "registry_name": extract_regex(
-            r"(?:Registry Name|Registry)\s*[:\-]\s*([^\n\r]+)",
+        "arrival_date": extract_regex(
+            r"Arrival\s+Date\s*:?\s*"
+            r"(\d{4}-\d{2}-\d{2})"
+            r"(?=\s+Declared\s+Purpose\b|$)",
             text,
         ),
-
-        "registry_status": extract_regex(
-            r"(?:Registry Status|Status)\s*[:\-]\s*([^\n\r]+)",
+        "declared_purpose": extract_regex(
+            r"Declared\s+Purpose\s*:?\s*"
+            r"(.+?)"
+            r"(?=\s+(?:SAMPLE\s+DENIAL|SAMPLE\s+APPROVAL|Packet)\b|$)",
             text,
         ),
-
-        "application_date": extract_regex(
-            r"(?:Application Date|Submission Date|Date)\s*[:\-]\s*"
-            r"(\d{4}[-/]\d{1,2}[-/]\d{1,2}"
-            r"|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})",
-            text,
-        ),
-
     }
 
     return {
