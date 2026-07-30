@@ -1,56 +1,75 @@
 from ..utils import extract_regex
 
 
+INTAKE_BOUNDARY = (
+    r"(?=\s+(?:"
+    r"Case\s+ID|"
+    r"Applicant|"
+    r"Species\s+Code|"
+    r"Home\s+World|"
+    r"Visa\s+(?:Class|Close)|"
+    r"Sponsor\s+ID|"
+    r"Arrival\s+Date|"
+    r"Declared\s+Purpose|"
+    r"Packet"
+    r")\b|$)"
+)
+
+
 def extract_intake_form(text: str) -> dict:
     """Extract fields from Form I-8090."""
 
     fields = {
         "case_id": extract_regex(
             r"Case\s+ID\s*:?\s*"
-            r"(MIB-\d+)"
-            r"(?=\s+Applicant\b|$)",
+            r"(MIB-\d+)",
             text,
         ),
+
         "applicant": extract_regex(
             r"Applicant\s*:?\s*"
             r"(.+?)"
-            r"(?=\s+Species\s+Code\b|$)",
+            + INTAKE_BOUNDARY,
             text,
         ),
-        "species_code": extract_regex(
+
+       "species_code": extract_regex(
             r"Species\s+Code\s*:?\s*"
-            r"([A-Z0-9_ -]+?)"
-            r"(?=\s+Home\s+World\b|$)",
+            r"([A-Z][A-Z0-9_]+)",
             text,
         ),
+
+
         "home_world": extract_regex(
             r"Home\s+World\s*:?\s*"
             r"(.+?)"
-            r"(?=\s+Visa\s+Class\b|$)",
+            + INTAKE_BOUNDARY,
             text,
         ),
+
         "visa_class": extract_regex(
             r"Visa\s+Class\s*:?\s*"
             r"([A-Z0-9-]+)"
-            r"(?=\s+Sponsor\s+ID\b|$)",
+            + INTAKE_BOUNDARY,
             text,
         ),
-        "sponsor_id": extract_regex(
+
+       "sponsor_id": extract_regex(
             r"Sponsor\s+ID\s*:?\s*"
-            r"(SPN[- ]?\d+)"
-            r"(?=\s+Arrival\s+Date\b|$)",
+            r"(SPN[- ]?\d+)",
             text,
         ),
-        "arrival_date": extract_regex(
+
+       "arrival_date": extract_regex(
             r"Arrival\s+Date\s*:?\s*"
-            r"(\d{4}-\d{2}-\d{2})"
-            r"(?=\s+Declared\s+Purpose\b|$)",
+            r"(\d{4}-\d{2}-\d{2})",
             text,
         ),
+
         "declared_purpose": extract_regex(
             r"Declared\s+Purpose\s*:?\s*"
             r"(.+?)"
-            r"(?=\s+(?:SAMPLE\s+DENIAL|SAMPLE\s+APPROVAL|Packet)\b|$)",
+            + INTAKE_BOUNDARY,
             text,
         ),
     }
