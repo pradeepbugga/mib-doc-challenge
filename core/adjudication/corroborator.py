@@ -140,6 +140,7 @@ def corroborate_field(
             resolved_value=None,
             status="missing",
             observations=observations,
+            supporting_observations=[],
             resolution_method=None,
         )
 
@@ -175,6 +176,7 @@ def corroborate_field(
             resolved_value=None,
             status="conflicting",
             observations=observations,
+            supporting_observations=matching,
             resolution_method=None,
         )
 
@@ -224,6 +226,7 @@ def corroborate_field(
         resolved_value=candidate.normalized_value,
         status=status,
         observations=observations,
+        supporting_observations=matching,
         resolution_method=resolution_method,
     )
 
