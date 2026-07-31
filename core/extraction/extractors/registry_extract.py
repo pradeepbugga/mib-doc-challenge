@@ -1,47 +1,58 @@
-from ..patterns import *
+import re
+
 from ..utils import extract_regex
 
 
+REGISTRY_BOUNDARY = (
+    r"(?=\s+(?:"
+    r"Applicant|"
+    r"Registry\s+Name|"
+    r"Home\s+World|"
+    r"Species\s+Code|"
+    r"Registry\s+Status|"
+    r"(?:Arrival|Arival|Amival|Antval)\s+Date|"
+    r"REGISTRY\s+IMAGE|"
+    r"Packet"
+    r")\b|$)"
+)
+
+
 def extract_registry_extract(text: str) -> dict:
-    """
-    Extract fields from a planetary registry extract.
-
-    Supports both:
-        Field: Value
-
-    and:
-        Field
-        Value
-    """
-
     fields = {
-        "registry_name": extract_regex(
-            r"Registry\s+Name\s*:?\s*"
+        "applicant": extract_regex(
+            r"(?:Applicant|Registry\s+Name)\s*[:;.-]?\s*"
             r"(.+?)"
-            r"(?=\s+Home\s+World\b|$)",
+            + REGISTRY_BOUNDARY,
             text,
+            flags=re.IGNORECASE | re.DOTALL,
         ),
+
         "home_world": extract_regex(
-            r"Home\s+World\s*:?\s*"
+            r"Home\s+World\s*[:;.-]?\s*"
             r"(.+?)"
-            r"(?=\s+Species\s+Code\b|$)",
+            + REGISTRY_BOUNDARY,
             text,
+            flags=re.IGNORECASE | re.DOTALL,
         ),
+
         "species_code": extract_regex(
-            r"Species\s+Code\s*:?\s*"
-            r"([A-Z0-9_ -]+?)"
-            r"(?=\s+Registry\s+Status\b|$)",
+            r"Species\s+Code\s*[:;.-]?\s*"
+            r"([A-Z][A-Z0-9_]+)",
             text,
         ),
+
         "registry_status": extract_regex(
-            r"Registry\s+Status\s*:?\s*"
+            r"Registry\s+Status\s*[:;.-]?\s*"
             r"(.+?)"
-            r"(?=\s+Arrival\s+Date\b|$)",
+            + REGISTRY_BOUNDARY,
             text,
+            flags=re.IGNORECASE | re.DOTALL,
         ),
+
         "arrival_date": extract_regex(
-            r"Arrival\s+Date\s*:?\s*"
-            r"(\d{4}[-/]\d{1,2}[-/]\d{1,2})",
+            r"(?:Arrival|Arival|Amival|Antval)\s+Date"
+            r"\s*[:;.-]?\s*"
+            r"(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})",
             text,
         ),
     }
