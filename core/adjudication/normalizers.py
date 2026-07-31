@@ -1,5 +1,5 @@
 from datetime import datetime
-
+from difflib import SequenceMatcher
 
 
 import re
@@ -136,6 +136,104 @@ def normalize_waiver_code(value: str | None) -> str | None:
 
     return aliases.get(normalized, normalized)
 
+
+
+DISQUALIFYING_RISK_FLAGS = {
+    "memory_tampering",
+    "planetary_embargo",
+    "active_warrant",
+    "biohazard_red",
+}
+
+REVIEW_ONLY_RISK_FLAGS = {
+    "identity_conflict",
+    "sponsor_mismatch",
+    "illegible_biometrics",
+    "rescinded_denial",
+}
+
+VALID_RISK_FLAGS = (
+    DISQUALIFYING_RISK_FLAGS
+    | REVIEW_ONLY_RISK_FLAGS
+    | {"none"}
+)
+
+
+def best_flag_match(value: str) -> str | None:
+    scores = sorted(
+        (
+            (
+                SequenceMatcher(None, value, candidate).ratio(),
+                candidate,
+            )
+            for candidate in VALID_RISK_FLAGS
+        ),
+        reverse=True,
+    )
+
+    best_score, best_flag = scores[0]
+    second_score = scores[1][0]
+
+    if best_score < 0.72:
+        return None
+
+    if best_score - second_score < 0.08:
+        return None
+
+    return best_flag
+
+
+
+
+def normalize_risk_flag(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    normalized = value.strip().lower()
+    normalized = re.sub(r"[\s-]+", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized)
+    normalized = normalized.strip("_")
+
+    if normalized == "none":
+        return "none"
+
+    if normalized in VALID_RISK_FLAGS:
+        return normalized
+
+    return best_flag_match(normalized)
+
+def normalize_risk_flags(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    raw_flags = re.split(r"[|,;]+", value)
+
+    normalized_flags = []
+
+    for raw_flag in raw_flags:
+        normalized = normalize_risk_flag(raw_flag)
+
+        if normalized is not None:
+            normalized_flags.append(normalized)
+
+    if not normalized_flags:
+        return None
+
+    unique_flags = sorted(set(normalized_flags))
+
+    if unique_flags == ["none"]:
+        return "none"
+
+    unique_flags = [
+        flag
+        for flag in unique_flags
+        if flag != "none"
+    ]
+
+    return "|".join(unique_flags)
+
+
+
 def normalize_text(
     value: str | None,
 ) -> str | None:
@@ -155,6 +253,7 @@ NORMALIZERS = {
     "fee_status": normalize_fee_status,
     "waiver_code": normalize_waiver_code,
     "purpose": normalize_text,
+    "risk_flags": normalize_risk_flags,
 }
 
 def normalize_observations(
