@@ -95,6 +95,16 @@ def run_pipeline(pdf_path: Path):
             f"method={resolved_field.resolution_method}"
         )
 
+        for observation in resolved_field.supporting_observations:
+            print(
+                "    supported by: "
+                f"page={observation.page_number}, "
+                f"document={observation.document_type}, "
+                f"text_source={observation.text_source}, "
+                f"raw={observation.raw_value!r}, "
+                f"normalized={observation.normalized_value!r}"
+            )
+
     return packet
 
 
