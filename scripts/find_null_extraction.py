@@ -36,7 +36,7 @@ for pdf_path in tqdm(sorted(pdf_dir.glob("*.pdf")), desc="Processing PDFs"):
         fields = page["extraction"]["fields"]
 
         document_type = page["classification"]["document_type"]
-        required = DOCUMENT_REQUIRED_FIELDS[document_type]
+        required = DOCUMENT_REQUIRED_FIELDS.get(document_type, set())
 
         unexpected_missing = []
         expected_unavailable = {}
