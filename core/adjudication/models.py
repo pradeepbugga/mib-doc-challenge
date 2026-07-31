@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 
 @dataclass
 class FieldObservation:
