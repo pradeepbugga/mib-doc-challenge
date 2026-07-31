@@ -9,7 +9,11 @@ from typing import Any
 # Update these imports to match your project.
 from core.extraction.extractor import extract_fields
 from core.pipeline.page_pipeline import process_page
+from core.pipeline.case_assignment import normalize_case_id_candidate
 
+
+def extract_filename_case_id(pdf_path: Path) -> str | None:
+    return normalize_case_id_candidate(pdf_path.stem)
 
 def serialize_classification(classification: Any) -> dict:
     """
@@ -56,14 +60,19 @@ def test_extraction(pdf_path: Path) -> list[dict]:
     results: list[dict] = []
 
     with fitz.open(pdf_path) as doc:
+
+        filename_case_id = extract_filename_case_id(pdf_path)
+
         for page in doc:
             page_result = process_page(
                 doc=doc,
                 page=page,
+                filename_case_id=filename_case_id,
             )
 
             classification = page_result["classification"]
             document_type = classification.document_type
+            case_assignment = page_result.get("case_assignment")
 
             # Use the final text selected by process_page:
             # either native PDF text or OCR text.
@@ -92,6 +101,15 @@ def test_extraction(pdf_path: Path) -> list[dict]:
                             classification.matched_cues
                         ),
                     },
+                    "resolved_case_id": case_assignment.resolved_case_id,
+                    "case_assignment": {
+                        "header_case_id": case_assignment.header_case_id,
+                        "footer_case_id": case_assignment.footer_case_id,
+                        "internal_case_id": case_assignment.internal_case_id,
+                        "filename_case_id": case_assignment.filename_case_id,
+                        "assignment_method": case_assignment.assignment_method,
+                        "mismatch": case_assignment.mismatch,
+                    },
                     "extraction": extraction,
                     "page_text": page_text,
                 }
@@ -115,7 +133,11 @@ def print_results(results: list[dict]) -> None:
             f"{classification['document_type']} "
             f"(confidence={classification['confidence']:.2f})"
         )
-
+        print(f"  Resolved case ID: {result['resolved_case_id']}")
+        print(
+            "  Case assignment: "
+            f"{result['case_assignment']}"
+        )
         print("  Extracted fields:")
 
         if not fields:
