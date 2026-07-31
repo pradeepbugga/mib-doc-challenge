@@ -1,5 +1,5 @@
 from ..utils import extract_regex
-
+import re
 
 INTAKE_BOUNDARY = (
     r"(?=\s+(?:"
@@ -14,7 +14,14 @@ INTAKE_BOUNDARY = (
     r"Packet"
     r")\b|$)"
 )
-
+INTAKE_PURPOSE_BOUNDARY = (
+    r"(?=\s+(?:"
+    r"Manual\s+correction\s*:|"
+    r"SAMPLE\s+DENIAL|"
+    r"SAMPLE\s+APPROVAL|"
+    r"Packet\s+MIB-\d+\s*/\s*page"
+    r")\b|$)"
+)
 
 def extract_intake_form(text: str) -> dict:
     """Extract fields from Form I-8090."""
@@ -67,10 +74,10 @@ def extract_intake_form(text: str) -> dict:
         ),
 
         "declared_purpose": extract_regex(
-            r"Declared\s+Purpose\s*:?\s*"
-            r"(.+?)"
-            + INTAKE_BOUNDARY,
+            r"Declared\s+Purpose\s*:?\s*(.+?)"
+            + INTAKE_PURPOSE_BOUNDARY,
             text,
+            flags=re.IGNORECASE | re.DOTALL,
         ),
     }
 
