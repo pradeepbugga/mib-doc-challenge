@@ -163,7 +163,7 @@ def route_page_quality(
             detect_orientation=True,
             rotate=True,
             deskew=True,
-            enhance_contrast=assessment.low_contrast,
+            enhance_contrast=False, # we make this False because we want to enhance contrast in the OCR step, not here
             denoise=True,
             threshold=True,
             reason=(
