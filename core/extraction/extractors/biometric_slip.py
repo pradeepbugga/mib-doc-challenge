@@ -1,7 +1,7 @@
 from ..utils import extract_regex
 import re
 
-OCR_SEPARATOR = r"[\s|‘’'\"`]+"
+OCR_SEPARATOR = r"[\s|‘’'\"`()\[\]{}:;,.=—–-]+"
 
 BIOMETRIC_BOUNDARY = (
     rf"(?={OCR_SEPARATOR}(?:"
@@ -12,6 +12,7 @@ BIOMETRIC_BOUNDARY = (
     r"Observed\s+flags|"
     r"SCAN\s+IMAGE|"
     r"Packet"
+    r"Synthetic\s+hiring"
     r")\b|$)"
 )
 
@@ -37,7 +38,7 @@ def extract_biometric_slip(text: str) -> dict:
         "species_match": extract_regex(
             r"Species\s+Match\s*[:;.-]?\s*"
             r"(.+?)"
-            r"(?=\s+Observed\s+flags\b|\s+Biometric\s+confidence\b|\s+Packet\b|$)",
+            + BIOMETRIC_BOUNDARY,
             text,
             flags=re.IGNORECASE | re.DOTALL,
         ),
