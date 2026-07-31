@@ -3,23 +3,36 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from pprint import pprint
+from collections import defaultdict
 
 from scripts.test_extraction import test_extraction
 
-from core.adjudication.models import FieldObservation
+from core.adjudication.models import FieldObservation, IdentityResolutionResult
 from core.adjudication.normalizers import normalize_observations
 from core.adjudication.corroborator import corroborate_packet
 
 FIELD_ALIASES = {
-    "declared_purpose": "purpose",
-    "purpose": "purpose",
+    # Names
+    "applicant": "applicant_name",
+    "registry_name": "applicant_name",
 
-    "species_code": "species",
-    "species_match": "species",
+    # Species
+    "species_match": "species_code",
+    "species": "species_code",
+
+    # Purpose
+    "purpose": "declared_purpose",
+
+    # Risk flags
+    "observed_flags": "risk_flags",
+
+    # Human adjudicator note (keep separate)
+    "decision": "adjudicator_decision",
+    "reason": "adjudicator_reason",
 }
-
 def build_observations(
     extraction_results: list[dict],
+    identity_result: IdentityResolutionResult
 ) -> list[FieldObservation]:
     """
     Convert page-level extraction results into canonical field observations.
@@ -34,11 +47,15 @@ def build_observations(
             "classification"
         ]["document_type"]
 
+        assignment = identity_result.assignments[page_number]
+
+
         fields = page_result["extraction"].get(
             "fields",
             {},
         )
 
+        
         for extracted_field, raw_value in fields.items():
             canonical_field = FIELD_ALIASES.get(
                 extracted_field,
@@ -52,6 +69,7 @@ def build_observations(
                     document_type=document_type,
                     page_number=page_number,
                     text_source=text_source,
+                    case_id=assignment.case_id
                 )
             )
 
@@ -60,52 +78,119 @@ def build_observations(
 
 def run_pipeline(pdf_path: Path):
     """
-    Run extraction, normalization, and corroboration on one PDF packet.
+    Run extraction, provisional identity grouping, normalization,
+    and corroboration for every case found in one PDF.
     """
 
-    # 1. Run your existing page-level extraction pipeline.
-    extraction_results = test_extraction(pdf_path)
+    # 1. Page-level extraction plus initial case-ID grouping.
+    extraction_results, identity_result = test_extraction(
+        pdf_path
+    )
 
-    # 2. Convert extraction dictionaries into observations.
-    observations = build_observations(extraction_results)
+    # 2. Convert page results into observations using the
+    # provisional PDF-level case assignments.
+    observations = build_observations(
+        extraction_results=extraction_results,
+        identity_result=identity_result,
+    )
+
+    assigned_observations = [
+        observation
+        for observation in observations
+        if observation.case_id is not None
+    ]
+
+    unassigned_observations = [
+        observation
+        for observation in observations
+        if observation.case_id is None
+    ]
 
     print("\n=== RAW OBSERVATIONS ===")
 
     for observation in observations:
         pprint(observation)
 
-    # 3. Normalize field values.
-    normalized_observations = normalize_observations(observations)
+    # 3. Group assigned observations by case ID.
+    observations_by_case_id = defaultdict(list)
 
-    print("\n=== NORMALIZED OBSERVATIONS ===")
+    for observation in assigned_observations:
+        observations_by_case_id[
+            observation.case_id
+        ].append(observation)
 
-    for observation in normalized_observations:
-        pprint(observation)
+    # 4. Normalize and corroborate each case separately.
+    resolved_cases = {}
 
-    # 4. Corroborate observations across pages.
-    packet = corroborate_packet(normalized_observations)
-
-    print("\n=== RESOLVED PACKET ===")
-
-    for field_name, resolved_field in packet.fields.items():
-        print(
-            f"{field_name}: "
-            f"value={resolved_field.resolved_value!r}, "
-            f"status={resolved_field.status}, "
-            f"method={resolved_field.resolution_method}"
+    for case_id, case_observations in (
+        observations_by_case_id.items()
+    ):
+        normalized_case_observations = normalize_observations(
+            case_observations
         )
 
-        for observation in resolved_field.supporting_observations:
+        print(
+            f"\n=== NORMALIZED OBSERVATIONS: "
+            f"{case_id} ==="
+        )
+
+        for observation in normalized_case_observations:
+            pprint(observation)
+
+        resolved_cases[case_id] = corroborate_packet(
+            normalized_case_observations
+        )
+
+    # 5. Print provisional resolved cases.
+    print("\n=== PROVISIONAL RESOLVED CASES ===")
+
+    if not resolved_cases:
+        print("No cases were resolved.")
+
+    for case_id, packet in resolved_cases.items():
+        print(f"\nCASE: {case_id}")
+
+        for field_name, resolved_field in (
+            packet.fields.items()
+        ):
             print(
-                "    supported by: "
-                f"page={observation.page_number}, "
-                f"document={observation.document_type}, "
-                f"text_source={observation.text_source}, "
-                f"raw={observation.raw_value!r}, "
-                f"normalized={observation.normalized_value!r}"
+                f"{field_name}: "
+                f"value={resolved_field.resolved_value!r}, "
+                f"status={resolved_field.status}, "
+                f"method={resolved_field.resolution_method}"
             )
 
-    return packet
+            for observation in (
+                resolved_field.supporting_observations
+            ):
+                print(
+                    "    supported by: "
+                    f"page={observation.page_number}, "
+                    f"document={observation.document_type}, "
+                    f"text_source={observation.text_source}, "
+                    f"raw={observation.raw_value!r}, "
+                    f"normalized="
+                    f"{observation.normalized_value!r}"
+                )
+
+    # 6. Keep unresolved-page evidence separate for the later
+    # metadata-linkage pass.
+    print("\n=== UNASSIGNED OBSERVATIONS ===")
+
+    print(
+    "\nUnassigned pages:",
+        identity_result.unassigned_pages,
+    )
+
+    print("\nUnassigned observations:")
+
+    if not unassigned_observations:
+        print("None")
+    else:
+        for observation in unassigned_observations:
+            pprint(observation)
+
+    return resolved_cases, unassigned_observations
 
 
 def parse_args() -> argparse.Namespace:

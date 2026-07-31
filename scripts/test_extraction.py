@@ -10,6 +10,7 @@ from typing import Any
 from core.extraction.extractor import extract_fields
 from core.pipeline.page_pipeline import process_page
 from core.pipeline.case_assignment import normalize_case_id_candidate
+from core.pipeline.identity_resolution import resolve_initial_identities
 
 
 def extract_filename_case_id(pdf_path: Path) -> str | None:
@@ -66,13 +67,11 @@ def test_extraction(pdf_path: Path) -> list[dict]:
         for page in doc:
             page_result = process_page(
                 doc=doc,
-                page=page,
-                filename_case_id=filename_case_id,
-            )
+                page=page)
 
             classification = page_result["classification"]
             document_type = classification.document_type
-            case_assignment = page_result.get("case_assignment")
+            case_id_candidates = page_result["case_id_candidates"]
 
             # Use the final text selected by process_page:
             # either native PDF text or OCR text.
@@ -101,43 +100,52 @@ def test_extraction(pdf_path: Path) -> list[dict]:
                             classification.matched_cues
                         ),
                     },
-                    "resolved_case_id": case_assignment.resolved_case_id,
-                    "case_assignment": {
-                        "header_case_id": case_assignment.header_case_id,
-                        "footer_case_id": case_assignment.footer_case_id,
-                        "internal_case_id": case_assignment.internal_case_id,
-                        "filename_case_id": case_assignment.filename_case_id,
-                        "assignment_method": case_assignment.assignment_method,
-                        "mismatch": case_assignment.mismatch,
-                    },
+                    "case_id_candidates": case_id_candidates,
                     "extraction": extraction,
                     "page_text": page_text,
                 }
             )
+        identity_result = resolve_initial_identities(results)
 
-    return results
+    return results, identity_result
 
-def print_results(results: list[dict]) -> None:
+def print_results(results: list[dict], identity_result: Any) -> None:
     """Print page-level extraction results."""
     for result in results:
         classification = result["classification"]
         fields = result["extraction"].get("fields", {})
+        candidates = result["case_id_candidates"]
+
+        page_number = result["page_number"]
+        assignment = identity_result.assignments[page_number]
 
         print("=" * 80)
-        print(f"Page {result['page_number']}:")
+        print(f"Page {page_number}:")
         print(f"  Quality: {result['quality']}")
         print(f"  Text source: {result['text_source']}")
         print(f"  OCR strategy: {result['ocr_strategy']}")
+
         print(
             "  Classification: "
             f"{classification['document_type']} "
             f"(confidence={classification['confidence']:.2f})"
         )
-        print(f"  Resolved case ID: {result['resolved_case_id']}")
+
         print(
-            "  Case assignment: "
-            f"{result['case_assignment']}"
+            "  Case ID candidates: "
+            f"header={candidates.header_case_id!r}, "
+            f"footer={candidates.footer_case_id!r}, "
+            f"internal={candidates.internal_case_id!r}, "
+            f"mismatch={candidates.has_mismatch}"
         )
+
+        print(
+            "  Provisional case assignment: "
+            f"case_id={assignment.case_id!r}, "
+            f"method={assignment.assignment_method!r}, "
+            f"mismatch={assignment.mismatch}"
+        )
+
         print("  Extracted fields:")
 
         if not fields:
@@ -149,12 +157,46 @@ def print_results(results: list[dict]) -> None:
         print("  Page text:")
         print(f"    {result['page_text'][:500]}")
 
+    print("\n=== INITIAL IDENTITY GROUPS ===")
+
+    if identity_result.pages_by_case_id:
+        for case_id, page_numbers in (
+            identity_result.pages_by_case_id.items()
+        ):
+            print(f"{case_id}: pages {page_numbers}")
+    else:
+        print("No case groups resolved.")
+
+    print(
+        "Unassigned pages: "
+        f"{identity_result.unassigned_pages}"
+    )
+
+def serialize_case_candidates(candidates) -> dict:
+    return {
+        "header_case_id": candidates.header_case_id,
+        "footer_case_id": candidates.footer_case_id,
+        "internal_case_id": candidates.internal_case_id,
+        "mismatch": candidates.has_mismatch,
+    }
 
 def save_results(
     results: list[dict],
     output_path: Path,
 ) -> None:
     """Save results to JSON."""
+
+    serializable_results = []
+
+    for result in results:
+        serializable_result = result.copy()
+        serializable_result["case_id_candidates"] = (
+            serialize_case_candidates(
+                result["case_id_candidates"]
+            )
+        )
+        serializable_results.append(serializable_result)
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -165,7 +207,7 @@ def save_results(
         encoding="utf-8",
     ) as file:
         json.dump(
-            results,
+            serializable_results,
             file,
             indent=2,
             ensure_ascii=False,
@@ -204,9 +246,14 @@ def main() -> None:
             f"PDF not found: {args.pdf_path}"
         )
 
-    results = test_extraction(args.pdf_path)
+    results, identity_result = test_extraction(
+        args.pdf_path
+    )
 
-    print_results(results)
+    print_results(
+        results=results,
+        identity_result=identity_result,
+    )
 
     if args.output is not None:
         save_results(
