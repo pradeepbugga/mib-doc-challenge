@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,8 +14,34 @@ if TYPE_CHECKING:
     from core.quality.quality_router import QualityRoute
 
 
-DEFAULT_RENDER_DPI = 300
-DEFAULT_TESSERACT_CONFIG = "--oem 3 --psm 6"
+DEFAULT_RENDER_DPI = 200
+DEFAULT_TESSERACT_CONFIG = "--oem 3 --psm 11"
+
+MIN_DESKEW_ANGLE = 2.0
+
+@dataclass(frozen=True)
+class OCRProfile:
+    """Empirically selected OCR settings for the challenge documents."""
+
+    name: str
+    render_dpi: int
+    tesseract_config: str
+    use_clahe: bool
+
+
+STANDARD_OCR_PROFILE = OCRProfile(
+    name="standard",
+    render_dpi=200,
+    tesseract_config="--oem 3 --psm 11",
+    use_clahe=False,
+)
+
+DEGRADED_OCR_PROFILE = OCRProfile(
+    name="degraded_scan",
+    render_dpi=200,
+    tesseract_config="--oem 3 --psm 11",
+    use_clahe=True,
+)
 
 
 @dataclass(frozen=True)
@@ -30,6 +55,8 @@ class OCRResult:
     word_count: int
     preprocessing_steps: list[str]
     render_dpi: int
+    profile_name: str
+    tesseract_config: str
 
 
 def render_page(
@@ -240,9 +267,15 @@ def threshold_image(image: np.ndarray) -> np.ndarray:
 def preprocess_for_ocr(
     image: np.ndarray,
     route: QualityRoute,
+    profile: OCRProfile,
 ) -> tuple[np.ndarray, list[str]]:
     """
-    Apply only the transformations selected by the quality router.
+    Apply orientation/deskew corrections plus the selected OCR profile.
+
+    Benchmarking showed that denoising and adaptive thresholding generally
+    reduced recognition quality. The primary profile therefore uses the
+    rendered image directly, while the degraded-scan fallback adds only
+    CLAHE contrast enhancement.
     """
 
     processed = image.copy()
@@ -261,26 +294,33 @@ def preprocess_for_ocr(
     if route.deskew:
         skew_angle = estimate_skew_angle(processed)
 
-        if abs(skew_angle) >= 0.5:
+        if abs(skew_angle) >= MIN_DESKEW_ANGLE:
             processed = deskew_image(
                 processed,
                 angle=skew_angle,
             )
             steps.append(f"deskew_{skew_angle:.2f}")
 
-    if route.enhance_contrast:
+    if profile.use_clahe:
         processed = enhance_contrast(processed)
-        steps.append("enhance_contrast")
-
-    if route.denoise:
-        processed = denoise_image(processed)
-        steps.append("denoise")
-
-    if route.threshold:
-        processed = threshold_image(processed)
-        steps.append("adaptive_threshold")
+        steps.append("clahe")
 
     return processed, steps
+
+
+def select_ocr_profile(route: QualityRoute) -> OCRProfile:
+    """
+    Select the empirically preferred OCR profile for a quality route.
+
+    The degraded route uses CLAHE as the only image-enhancement fallback.
+    Denoising and thresholding flags from older routes are intentionally not
+    applied because the benchmark consistently found them harmful.
+    """
+
+    if route.enhance_contrast:
+        return DEGRADED_OCR_PROFILE
+
+    return STANDARD_OCR_PROFILE
 
 
 def extract_ocr_data(
@@ -341,27 +381,17 @@ def extract_ocr_data(
 def run_ocr(
     page: fitz.Page,
     route: QualityRoute,
-    render_dpi: int = DEFAULT_RENDER_DPI,
-    tesseract_config: str = DEFAULT_TESSERACT_CONFIG,
+    profile: OCRProfile | None = None,
+    render_dpi: int | None = None,
+    tesseract_config: str | None = None,
 ) -> OCRResult:
     """
-    Render a PDF page, apply route-selected preprocessing, and run OCR.
+    Render a PDF page, apply the selected benchmark-derived profile, and OCR.
 
-    Parameters
-    ----------
-    page
-        PyMuPDF page to process.
-    route
-        Instructions returned by route_page_quality().
-    render_dpi
-        Resolution used to render the PDF page.
-    tesseract_config
-        Tesseract command-line configuration.
+    By default, the profile is selected from the quality route:
 
-    Returns
-    -------
-    OCRResult
-        Extracted text and OCR diagnostics.
+    - standard: 200 DPI, no CLAHE/denoise/threshold, PSM 11
+    - degraded_scan: 200 DPI, CLAHE only, PSM 11
     """
 
     if not route.run_ocr:
@@ -369,19 +399,26 @@ def run_ocr(
             "run_ocr() received a route for which run_ocr is False"
         )
 
+    selected_profile = profile or select_ocr_profile(route)
+    selected_render_dpi = render_dpi or selected_profile.render_dpi
+    selected_tesseract_config = (
+        tesseract_config or selected_profile.tesseract_config
+    )
+
     image = render_page(
         page=page,
-        dpi=render_dpi,
+        dpi=selected_render_dpi,
     )
 
     processed_image, preprocessing_steps = preprocess_for_ocr(
         image=image,
         route=route,
+        profile=selected_profile,
     )
 
     text, average_confidence, word_count = extract_ocr_data(
         image=processed_image,
-        config=tesseract_config,
+        config=selected_tesseract_config,
     )
 
     return OCRResult(
@@ -389,5 +426,7 @@ def run_ocr(
         average_confidence=average_confidence,
         word_count=word_count,
         preprocessing_steps=preprocessing_steps,
-        render_dpi=render_dpi,
+        render_dpi=selected_render_dpi,
+        profile_name=selected_profile.name,
+        tesseract_config=selected_tesseract_config,
     )
