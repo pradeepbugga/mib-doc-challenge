@@ -1,24 +1,27 @@
 from ..utils import extract_regex
 import re
 
-INTAKE_BOUNDARY = (
+INTAKE_FIELD_BOUNDARY = (
     r"(?=\s+(?:"
-    r"Case\s+ID|"
+    r"Case\s+(?:ID|1D|10)|"
     r"Applicant|"
     r"Species\s+Code|"
     r"Home\s+World|"
     r"Visa\s+(?:Class|Close)|"
-    r"Sponsor\s+ID|"
-    r"Arrival\s+Date|"
+    r"Sponsor\s+(?:ID|1D|10)|"
+    r"(?:Arrival|Antval|Amival|Arnval|Ariival)\s+Date|"
     r"Declared\s+Purpose|"
+    r"PASSPORT\s+IMAGE|"
+    r"Manual\s+correction\s*:|"
+    r"SAMPLE\s+(?:DENIAL|APPROVAL)|"
     r"Packet"
     r")\b|$)"
 )
+
 INTAKE_PURPOSE_BOUNDARY = (
     r"(?=\s+(?:"
     r"Manual\s+correction\s*:|"
-    r"SAMPLE\s+DENIAL|"
-    r"SAMPLE\s+APPROVAL|"
+    r"SAMPLE\s+(?:DENIAL|APPROVAL)|"
     r"Packet\s+MIB-\d+\s*/\s*page"
     r")\b|$)"
 )
@@ -28,53 +31,55 @@ def extract_intake_form(text: str) -> dict:
 
     fields = {
         "case_id": extract_regex(
-            r"Case\s+ID\s*:?\s*"
-            r"(MIB-\d+)",
+            r"Case\s+(?:ID|1D|10)\s*[:;.-]?\s*"
+            r"(M[I1]B-\d+)",
             text,
         ),
 
         "applicant": extract_regex(
-            r"Applicant\s*:?\s*"
+            r"Applicant\s*[:;.-]?\s*"
             r"(.+?)"
-            + INTAKE_BOUNDARY,
+            + INTAKE_FIELD_BOUNDARY,
             text,
+            flags=re.IGNORECASE | re.DOTALL,
         ),
 
-       "species_code": extract_regex(
-            r"Species\s+Code\s*:?\s*"
+        "species_code": extract_regex(
+            r"Species\s+Code\s*[:;.-]?\s*"
             r"([A-Z][A-Z0-9_]+)",
             text,
         ),
 
-
         "home_world": extract_regex(
-            r"Home\s+World\s*:?\s*"
+            r"Home\s+World\s*[:;.-]?\s*"
             r"(.+?)"
-            + INTAKE_BOUNDARY,
+            + INTAKE_FIELD_BOUNDARY,
             text,
+            flags=re.IGNORECASE | re.DOTALL,
         ),
 
         "visa_class": extract_regex(
-            r"Visa\s+Class\s*:?\s*"
-            r"([A-Z0-9-]+)"
-            + INTAKE_BOUNDARY,
+            r"Visa\s+(?:Class|Close)\s*[:;.-]?\s*"
+            r"([A-Z0-9]+(?:[-.][A-Z0-9]+)?)",
             text,
         ),
 
-       "sponsor_id": extract_regex(
-            r"Sponsor\s+ID\s*:?\s*"
+        "sponsor_id": extract_regex(
+            r"Sponsor\s+(?:ID|1D|10)\s*[:;.=]?\s*"
             r"(SPN[- ]?\d+)",
             text,
         ),
 
-       "arrival_date": extract_regex(
-            r"Arrival\s+Date\s*:?\s*"
-            r"(\d{4}-\d{2}-\d{2})",
+        "arrival_date": extract_regex(
+            r"(?:Arrival|Antval|Amival|Arnval|Ariival)\s+Date"
+            r"\s*[:;.-]?\s*"
+            r"(\d{4}[-.]\d{2}[-.]\d{2})",
             text,
         ),
 
         "declared_purpose": extract_regex(
-            r"Declared\s+Purpose\s*:?\s*(.+?)"
+            r"Declared\s+Purpose\s*[:;.-]?\s*"
+            r"(.+?)"
             + INTAKE_PURPOSE_BOUNDARY,
             text,
             flags=re.IGNORECASE | re.DOTALL,
