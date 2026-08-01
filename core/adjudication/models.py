@@ -9,6 +9,7 @@ class FieldObservation:
     normalized_value: str | None = None
     trusted: bool = True
     text_source: str | None = None
+    case_id: str | None = None
 
 @dataclass
 class ResolvedField:
@@ -24,3 +25,9 @@ class ResolvedField:
 @dataclass
 class Packet:
     fields: dict[str, ResolvedField]
+
+@dataclass
+class IdentityResolutionResult:
+    assignments: dict[int, PageIdentityAssignment]
+    pages_by_case_id: dict[str, list[int]]
+    unassigned_pages: list[int] = dataclass_field(default_factory=list)
