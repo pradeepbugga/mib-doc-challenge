@@ -2,14 +2,13 @@ from core.quality.assessment import assess_page_quality
 from core.quality.quality_router import route_page_quality
 from core.ocr.engine import run_ocr
 from core.classification.page_classifier import classify_document_type
-from core.pipeline.case_assignment import resolve_page_case_assignment
+from core.pipeline.case_assignment import extract_case_id_candidates
 
 import fitz  # PyMuPDF
 
 def process_page(
     doc: fitz.Document,
-    page: fitz.Page,
-    filename_case_id: str | None = None,
+    page: fitz.Page
 ) -> dict:
     """
     Process one PDF page through quality assessment, routing,
@@ -44,11 +43,8 @@ def process_page(
         selected_text = ""
         text_source = "none"
 
-    case_assignment = resolve_page_case_assignment(
-        page_number=page.number + 1,
-        text=selected_text,
-        filename_case_id=filename_case_id,
-    )
+    case_id_candidates = extract_case_id_candidates(
+        selected_text)
 
     classification = classify_document_type(selected_text)
 
@@ -59,7 +55,7 @@ def process_page(
         "text": selected_text,
         "text_source": text_source,
         "classification": classification,
-        "case_assignment": case_assignment,
+        "case_id_candidates": case_id_candidates,
     }
 
 
