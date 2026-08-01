@@ -77,10 +77,8 @@ def test_extraction(pdf_path: Path) -> list[dict]:
             # either native PDF text or OCR text.
             page_text = page_result["text"]
 
-            extraction = extract_fields(
-                document_type=document_type,
-                text=page_text,
-            )
+            extraction = page_result["extraction"]
+            
 
             results.append(
                 {
@@ -102,6 +100,10 @@ def test_extraction(pdf_path: Path) -> list[dict]:
                     },
                     "case_id_candidates": case_id_candidates,
                     "extraction": extraction,
+                    "selected_rotation": page_result["selected_rotation"],
+                    "orientation_retry_attempted": page_result[
+                        "orientation_retry_attempted"
+                    ],
                     "page_text": page_text,
                 }
             )
@@ -153,6 +155,16 @@ def print_results(results: list[dict], identity_result: Any) -> None:
         else:
             for field_name, value in fields.items():
                 print(f"    {field_name}: {value!r}")
+
+        print(
+            "  Selected rotation: "
+            f"{result['selected_rotation']} degrees"
+        )
+
+        print(
+            "  Orientation retry attempted: "
+            f"{result['orientation_retry_attempted']}"
+        )
 
         print("  Page text:")
         print(f"    {result['page_text'][:500]}")
