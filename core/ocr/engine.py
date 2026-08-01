@@ -268,6 +268,7 @@ def preprocess_for_ocr(
     image: np.ndarray,
     route: QualityRoute,
     profile: OCRProfile,
+    apply_orientation_detection: bool = True,
 ) -> tuple[np.ndarray, list[str]]:
     """
     Apply orientation/deskew corrections plus the selected OCR profile.
@@ -281,7 +282,7 @@ def preprocess_for_ocr(
     processed = image.copy()
     steps: list[str] = []
 
-    if route.detect_orientation:
+    if apply_orientation_detection and route.detect_orientation:
         rotation = detect_orientation(processed)
 
         if route.rotate and rotation:
@@ -377,6 +378,92 @@ def extract_ocr_data(
 
     return text, average_confidence, len(words)
 
+def run_ocr_image(
+    image: np.ndarray,
+    route: QualityRoute,
+    profile: OCRProfile | None = None,
+    render_dpi: int | None = None,
+    tesseract_config: str | None = None,
+    apply_orientation_detection: bool = False,
+) -> OCRResult:
+    """
+    OCR an already-rendered page image.
+
+    This is used for orientation retries, where the caller has already
+    rotated the image to a candidate orientation.
+
+    Parameters
+    ----------
+    image
+        BGR or grayscale OpenCV image.
+    route
+        Quality route controlling deskew and enhancement.
+    profile
+        Optional OCR profile override.
+    render_dpi
+        DPI associated with the rendered image.
+    tesseract_config
+        Optional Tesseract configuration override.
+    apply_orientation_detection
+        Whether to run Tesseract OSD before OCR. This should normally be
+        False during explicit 90/180/270-degree retries.
+    """
+    if not route.run_ocr:
+        raise ValueError(
+            "run_ocr_image() received a route for which run_ocr is False"
+        )
+
+    selected_profile = profile or select_ocr_profile(route)
+    selected_render_dpi = render_dpi or selected_profile.render_dpi
+    selected_tesseract_config = (
+        tesseract_config or selected_profile.tesseract_config
+    )
+
+    processed = image.copy()
+    preprocessing_steps: list[str] = []
+
+    # During explicit orientation retries, the caller already selected
+    # the page rotation, so OSD should not rotate it again.
+    if apply_orientation_detection and route.detect_orientation:
+        rotation = detect_orientation(processed)
+
+        if route.rotate and rotation:
+            processed = rotate_image(
+                processed,
+                clockwise_degrees=rotation,
+            )
+            preprocessing_steps.append(f"rotate_{rotation}")
+
+    if route.deskew:
+        skew_angle = estimate_skew_angle(processed)
+
+        if abs(skew_angle) >= MIN_DESKEW_ANGLE:
+            processed = deskew_image(
+                processed,
+                angle=skew_angle,
+            )
+            preprocessing_steps.append(
+                f"deskew_{skew_angle:.2f}"
+            )
+
+    if selected_profile.use_clahe:
+        processed = enhance_contrast(processed)
+        preprocessing_steps.append("clahe")
+
+    text, average_confidence, word_count = extract_ocr_data(
+        image=processed,
+        config=selected_tesseract_config,
+    )
+
+    return OCRResult(
+        text=text,
+        average_confidence=average_confidence,
+        word_count=word_count,
+        preprocessing_steps=preprocessing_steps,
+        render_dpi=selected_render_dpi,
+        profile_name=selected_profile.name,
+        tesseract_config=selected_tesseract_config,
+    )
 
 def run_ocr(
     page: fitz.Page,
@@ -414,6 +501,7 @@ def run_ocr(
         image=image,
         route=route,
         profile=selected_profile,
+        apply_orientation_detection=False
     )
 
     text, average_confidence, word_count = extract_ocr_data(
