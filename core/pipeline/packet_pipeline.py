@@ -20,6 +20,7 @@ from core.adjudication.corroborator import corroborate_packet
 from core.adjudication.engine import Adjudication, adjudicate
 from core.adjudication.models import FieldObservation
 from core.adjudication.normalizers import normalize_observations
+from core.adjudication.fee_derivation import augment_fee_status
 from core.adjudication.risk_derivation import augment_risk_flags
 from core.pipeline.case_assignment import normalize_case_id_candidate
 from core.pipeline.identity_resolution import (
@@ -219,6 +220,7 @@ def process_packet(pdf_path: Path) -> PacketResult:
         )
 
     augment_risk_flags(packet)
+    augment_fee_status(packet)
     decision = adjudicate(packet)
 
     fields = {
