@@ -294,6 +294,14 @@ def refine_identities_with_metadata(
     remaining_unassigned: list[int] = []
     linkage_results: dict[int, MetadataLinkResult] = {}
 
+    # A packet that resolved to exactly one case has no ambiguity for an
+    # orphan page to fall foul of.
+    sole_case_id = (
+        next(iter(provisional_cases))
+        if len(provisional_cases) == 1
+        else None
+    )
+
     for page_number in initial_result.unassigned_pages:
         page_observations = observations_by_page.get(
             page_number,
@@ -377,6 +385,24 @@ def refine_identities_with_metadata(
             conflicting_fields=conflicting_fields,
         )
 
+        assignment_method = "metadata_linkage"
+
+        if not safe and sole_case_id is not None and not conflicting_fields:
+            # The strict gate exists to stop a page being attached to the wrong
+            # applicant when a packet holds several. With exactly one case in
+            # the packet there is no wrong case to choose, and the only real
+            # risk — a page belonging to some other applicant — shows up as a
+            # metadata conflict, which is excluded here.
+            #
+            # Without this, a page whose footer failed to OCR is dropped whole:
+            # MIB-000008 page 2 matched the sole case on applicant_name but
+            # scored 5.0 against a threshold of 7.0 with one matched field
+            # against a minimum of two, so its sponsor_id, visa_class and
+            # declared_purpose were all discarded despite being read correctly.
+            safe = True
+            best_case_id = sole_case_id
+            assignment_method = "sole_case_fallback"
+
         if not safe:
             remaining_unassigned.append(page_number)
 
@@ -396,7 +422,7 @@ def refine_identities_with_metadata(
         assignments[page_number] = replace(
             previous_assignment,
             case_id=best_case_id,
-            assignment_method="metadata_linkage",
+            assignment_method=assignment_method,
             linkage_fields=matched_fields,
         )
 
@@ -412,7 +438,7 @@ def refine_identities_with_metadata(
             second_best_score=second_best_score,
             matched_fields=matched_fields,
             conflicting_fields=conflicting_fields,
-            assignment_method="metadata_linkage",
+            assignment_method=assignment_method,
         )
 
     refined_result = IdentityResolutionResult(
