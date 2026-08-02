@@ -19,6 +19,17 @@ DEFAULT_TESSERACT_CONFIG = "--oem 3 --psm 11"
 
 MIN_DESKEW_ANGLE = 2.0
 
+# Grey level at or above which a pixel is treated as blank page rather than
+# ink. Real printed text on these packets renders very dark (as low as 41),
+# while the adversarial white-on-white layer renders around 226-255 — visually
+# invisible, but only a few grey levels off the background. CLAHE amplifies
+# local contrast, so without this clamp it can pull that hidden layer up into
+# readable glyphs and feed prompt-injection text straight into OCR output,
+# bypassing the visible-text filter that protects the native text layer.
+# Clamping first destroys the faint layer and also removes scan haze and
+# half-toned grid rules that blur character segmentation.
+FAINT_INK_FLOOR = 195
+
 @dataclass(frozen=True)
 class OCRProfile:
     """Empirically selected OCR settings for the challenge documents."""
@@ -210,12 +221,36 @@ def deskew_image(
     )
 
 
+def suppress_faint_ink(
+    image: np.ndarray,
+    floor: int = FAINT_INK_FLOOR,
+) -> np.ndarray:
+    """
+    Clamp near-white pixels to pure white and return a grayscale image.
+
+    Run this before any contrast enhancement. See `FAINT_INK_FLOOR`.
+    """
+
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+
+    suppressed = gray.copy()
+    suppressed[suppressed >= floor] = 255
+
+    return suppressed
+
+
 def enhance_contrast(image: np.ndarray) -> np.ndarray:
     """
     Enhance local contrast using CLAHE.
     """
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
 
     clahe = cv2.createCLAHE(
         clipLimit=2.0,
@@ -301,6 +336,11 @@ def preprocess_for_ocr(
                 angle=skew_angle,
             )
             steps.append(f"deskew_{skew_angle:.2f}")
+
+    # Must run after orientation/deskew, which need the colour image, and
+    # before CLAHE, which would otherwise amplify the faint layer.
+    processed = suppress_faint_ink(processed)
+    steps.append("suppress_faint_ink")
 
     if profile.use_clahe:
         processed = enhance_contrast(processed)
@@ -445,6 +485,9 @@ def run_ocr_image(
             preprocessing_steps.append(
                 f"deskew_{skew_angle:.2f}"
             )
+
+    processed = suppress_faint_ink(processed)
+    preprocessing_steps.append("suppress_faint_ink")
 
     if selected_profile.use_clahe:
         processed = enhance_contrast(processed)
