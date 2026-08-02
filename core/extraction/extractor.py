@@ -4,6 +4,10 @@ from core.extraction.fuzzy_labels import (
     FIELD_VOCABULARIES,
     extract_with_fuzzy_labels,
 )
+from core.extraction.manual_corrections import (
+    parse_corrections,
+    strip_corrections,
+)
 from core.extraction.registry import EXTRACTORS
 
 
@@ -32,6 +36,12 @@ def extract_fields(
     dict
         Structured extracted fields.
     """
+
+    # A correction note is precedence-1 evidence, but it is printed inside the
+    # form body, so it must be lifted out before the field regexes run or a
+    # greedy value pattern will absorb it.
+    corrections = parse_corrections(text)
+    text = strip_corrections(text)
 
     extractor = EXTRACTORS.get(document_type)
 
@@ -72,6 +82,11 @@ def extract_fields(
             # Only override with an exact vocabulary term, never with more
             # unvalidated text.
             fields[name] = value
+
+    # Applied last and unconditionally: a signed manual note outranks every
+    # other source on the page.
+    for name, value in corrections.items():
+        fields[name] = value
 
     result["fields"] = fields
 
