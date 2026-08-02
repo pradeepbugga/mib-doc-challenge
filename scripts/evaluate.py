@@ -122,7 +122,9 @@ def load_json_submission(path):
         if rows:
             return rows
 
-    raise SystemExit("JSON submission must be a list, a JSONL file, or an object with a predictions list.")
+    raise SystemExit(
+        "JSON submission must be a list, a JSONL file, or an object with a predictions list."
+    )
 
 
 def read_submission(path):
@@ -215,14 +217,20 @@ def score_case(case_id, truth, pred):
 
     truth_adj = str(truth.get("adjudication", "")).strip().upper()
     pred_adj = str((pred or {}).get("adjudication", "")).strip().upper()
-    classification_raw, classification_reason, catastrophic = classification_points(truth_adj, pred_adj)
+    classification_raw, classification_reason, catastrophic = classification_points(
+        truth_adj, pred_adj
+    )
     present = pred is not None
     adjudication_valid = (not present) or pred_adj in ADJUDICATION_VALUES
     adj_correct = present and truth_adj == pred_adj
     confidence, confidence_valid = parse_confidence(pred or {})
     confidence_brier = None
     if present:
-        confidence_brier = (confidence - (1.0 if adj_correct else 0.0)) ** 2 if confidence_valid else 1.0
+        confidence_brier = (
+            (confidence - (1.0 if adj_correct else 0.0)) ** 2
+            if confidence_valid
+            else 1.0
+        )
     fee_status = str((pred or {}).get("fee_status", "")).strip()
     fee_status_valid = (not present) or fee_status in FEE_VALUES
 
@@ -276,10 +284,18 @@ def build_results(truth_rows, pred_rows):
         totals["extraction_max_raw"] += scored["extraction_max_raw"]
         totals["classification_raw"] += scored["classification_raw"]
         totals["classification_max_raw"] += scored["classification_max_raw"]
-        totals["catastrophic_false_approvals"] += int(scored["catastrophic_false_approval"])
-        totals["invalid_adjudication_records"] += int(scored["present"] and not scored["adjudication_valid"])
-        totals["invalid_confidence_records"] += int(scored["present"] and not scored["confidence_valid"])
-        totals["invalid_fee_status_records"] += int(scored["present"] and not scored["fee_status_valid"])
+        totals["catastrophic_false_approvals"] += int(
+            scored["catastrophic_false_approval"]
+        )
+        totals["invalid_adjudication_records"] += int(
+            scored["present"] and not scored["adjudication_valid"]
+        )
+        totals["invalid_confidence_records"] += int(
+            scored["present"] and not scored["confidence_valid"]
+        )
+        totals["invalid_fee_status_records"] += int(
+            scored["present"] and not scored["fee_status_valid"]
+        )
 
         if scored["present"]:
             confusion[(scored["truth_adjudication"], scored["pred_adjudication"])] += 1
@@ -297,22 +313,32 @@ def build_results(truth_rows, pred_rows):
 
     if confidence_briers:
         mean_brier = sum(confidence_briers) / len(confidence_briers)
-        calibration_score = CALIBRATION_SECTION_POINTS * max(0.0, 1.0 - 2.0 * mean_brier)
+        calibration_score = CALIBRATION_SECTION_POINTS * max(
+            0.0, 1.0 - 2.0 * mean_brier
+        )
     else:
         mean_brier = None
         calibration_score = 0.0
 
-    missing_penalty = MISSING_PENALTY_CAP * safe_divide(len(missing_case_ids), len(truth_rows))
-    total_score = extraction_score + classification_score + calibration_score - missing_penalty
+    missing_penalty = MISSING_PENALTY_CAP * safe_divide(
+        len(missing_case_ids), len(truth_rows)
+    )
+    total_score = (
+        extraction_score + classification_score + calibration_score - missing_penalty
+    )
 
     per_missing_penalty = safe_divide(MISSING_PENALTY_CAP, len(truth_rows))
     for scored in case_scores:
-        scored["missing_penalty_score"] = per_missing_penalty if not scored["present"] else 0.0
+        scored["missing_penalty_score"] = (
+            per_missing_penalty if not scored["present"] else 0.0
+        )
 
     results = {
         "score_version": SCORE_VERSION,
         "score_scale": {
-            "max_score": EXTRACTION_SECTION_POINTS + CLASSIFICATION_SECTION_POINTS + CALIBRATION_SECTION_POINTS,
+            "max_score": EXTRACTION_SECTION_POINTS
+            + CLASSIFICATION_SECTION_POINTS
+            + CALIBRATION_SECTION_POINTS,
             "extraction_points": EXTRACTION_SECTION_POINTS,
             "classification_points": CLASSIFICATION_SECTION_POINTS,
             "calibration_points": CALIBRATION_SECTION_POINTS,
@@ -389,10 +415,18 @@ def print_summary(results):
     print(f"Invalid adjudication records: {counts['invalid_adjudication_records']}")
     print(f"Invalid confidence records: {counts['invalid_confidence_records']}")
     print(f"Invalid fee_status records: {counts['invalid_fee_status_records']}")
-    print(f"Field extraction: {scores['extraction_score']:.2f} / {EXTRACTION_SECTION_POINTS:.0f}")
-    print(f"Classification: {scores['classification_score']:.2f} / {CLASSIFICATION_SECTION_POINTS:.0f}")
-    print(f"Calibration: {scores['calibration_score']:.2f} / {CALIBRATION_SECTION_POINTS:.0f}")
-    print(f"Missing-case penalty: -{scores['missing_penalty']:.2f} / {MISSING_PENALTY_CAP:.0f}")
+    print(
+        f"Field extraction: {scores['extraction_score']:.2f} / {EXTRACTION_SECTION_POINTS:.0f}"
+    )
+    print(
+        f"Classification: {scores['classification_score']:.2f} / {CLASSIFICATION_SECTION_POINTS:.0f}"
+    )
+    print(
+        f"Calibration: {scores['calibration_score']:.2f} / {CALIBRATION_SECTION_POINTS:.0f}"
+    )
+    print(
+        f"Missing-case penalty: -{scores['missing_penalty']:.2f} / {MISSING_PENALTY_CAP:.0f}"
+    )
     print(f"Deterministic score: {scores['total_score']:.2f} / 150")
     print(f"Catastrophic false approvals: {raw['catastrophic_false_approvals']}")
     if raw["mean_confidence_brier"] is not None:
@@ -403,11 +437,22 @@ def print_summary(results):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Deterministically score MIB Doc Challenge predictions.")
-    parser.add_argument("--truth", required=True, help="CSV labels with a case_id column.")
-    parser.add_argument("--submission", required=True, help="Candidate CSV, JSON, or JSONL predictions.")
-    parser.add_argument("--output-json", help="Write aggregate evaluation results as JSON.")
-    parser.add_argument("--case-scores-jsonl", help="Write per-case deterministic scoring details as JSONL.")
+    parser = argparse.ArgumentParser(
+        description="Deterministically score MIB Doc Challenge predictions."
+    )
+    parser.add_argument(
+        "--truth", required=True, help="CSV labels with a case_id column."
+    )
+    parser.add_argument(
+        "--submission", required=True, help="Candidate CSV, JSON, or JSONL predictions."
+    )
+    parser.add_argument(
+        "--output-json", help="Write aggregate evaluation results as JSON."
+    )
+    parser.add_argument(
+        "--case-scores-jsonl",
+        help="Write per-case deterministic scoring details as JSONL.",
+    )
     args = parser.parse_args()
 
     truth_rows = read_truth(args.truth)

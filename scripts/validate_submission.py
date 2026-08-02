@@ -77,7 +77,9 @@ def load_json_submission(path):
         if rows:
             return rows
 
-    raise SystemExit("JSON submission must be a list, a JSONL file, or an object with a predictions list.")
+    raise SystemExit(
+        "JSON submission must be a list, a JSONL file, or an object with a predictions list."
+    )
 
 
 def read_submission(path):
@@ -147,7 +149,9 @@ def validate_row(row, line_label, submission_format="json"):
     if not SPONSOR_ID_PATTERN.fullmatch(sponsor_id):
         errors.append(f"{line_label}: invalid sponsor_id {row['sponsor_id']!r}")
 
-    arrival_date = row["arrival_date"].strip() if isinstance(row["arrival_date"], str) else ""
+    arrival_date = (
+        row["arrival_date"].strip() if isinstance(row["arrival_date"], str) else ""
+    )
     try:
         parsed_date = date.fromisoformat(arrival_date)
     except ValueError:
@@ -160,12 +164,15 @@ def validate_row(row, line_label, submission_format="json"):
     if isinstance(row["fee_status"], str) and fee_status not in FEE_VALUES:
         errors.append(f"{line_label}: invalid fee_status {row['fee_status']!r}")
 
-    adjudication = row["adjudication"].strip() if isinstance(row["adjudication"], str) else ""
+    adjudication = (
+        row["adjudication"].strip() if isinstance(row["adjudication"], str) else ""
+    )
     if isinstance(row["adjudication"], str) and adjudication not in ADJUDICATION_VALUES:
         errors.append(f"{line_label}: invalid adjudication {row['adjudication']!r}")
 
     if submission_format == "json" and (
-        isinstance(row["confidence"], bool) or not isinstance(row["confidence"], (int, float))
+        isinstance(row["confidence"], bool)
+        or not isinstance(row["confidence"], (int, float))
     ):
         errors.append(f"{line_label}: confidence must be a JSON number")
         return errors
@@ -182,10 +189,18 @@ def validate_row(row, line_label, submission_format="json"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate MIB Doc Challenge submission CSV/JSON/JSONL format.")
+    parser = argparse.ArgumentParser(
+        description="Validate MIB Doc Challenge submission CSV/JSON/JSONL format."
+    )
     parser.add_argument("--submission", required=True)
-    parser.add_argument("--manifest", help="CSV with a case_id column, such as data/validation_manifest.csv.")
-    parser.add_argument("--pdf-dir", help="Directory of PDFs; expected case ids are read from PDF filenames.")
+    parser.add_argument(
+        "--manifest",
+        help="CSV with a case_id column, such as data/validation_manifest.csv.",
+    )
+    parser.add_argument(
+        "--pdf-dir",
+        help="Directory of PDFs; expected case ids are read from PDF filenames.",
+    )
     parser.add_argument(
         "--require-complete",
         action="store_true",
@@ -196,7 +211,11 @@ def main():
     if bool(args.manifest) == bool(args.pdf_dir):
         raise SystemExit("Pass exactly one of --manifest or --pdf-dir.")
 
-    expected_ids = expected_ids_from_manifest(args.manifest) if args.manifest else expected_ids_from_pdf_dir(args.pdf_dir)
+    expected_ids = (
+        expected_ids_from_manifest(args.manifest)
+        if args.manifest
+        else expected_ids_from_pdf_dir(args.pdf_dir)
+    )
     expected_set = set(expected_ids)
     rows, submission_format = read_submission(args.submission)
 
@@ -215,9 +234,13 @@ def main():
     missing = sorted(expected_set - seen)
     extra = sorted(seen - expected_set)
     if missing and args.require_complete:
-        errors.append(f"missing {len(missing)} expected case ids; first 10: {missing[:10]}")
+        errors.append(
+            f"missing {len(missing)} expected case ids; first 10: {missing[:10]}"
+        )
     if extra:
-        errors.append(f"contains {len(extra)} unexpected case ids; first 10: {extra[:10]}")
+        errors.append(
+            f"contains {len(extra)} unexpected case ids; first 10: {extra[:10]}"
+        )
 
     if errors:
         for error in errors[:50]:
@@ -228,7 +251,9 @@ def main():
 
     print(f"Valid submission records: {len(rows)}")
     if missing:
-        print(f"Missing expected case ids: {len(missing)} (valid, scored with missing-case penalty)")
+        print(
+            f"Missing expected case ids: {len(missing)} (valid, scored with missing-case penalty)"
+        )
     else:
         print("Missing expected case ids: 0")
     return 0

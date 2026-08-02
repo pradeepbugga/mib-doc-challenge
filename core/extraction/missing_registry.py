@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 EXPECTED_MISSING_MARKERS = {
     "arrival_date": {
         "UNREADABLE",

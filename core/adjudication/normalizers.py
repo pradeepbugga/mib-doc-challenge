@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from difflib import SequenceMatcher
 from core.adjudication.ontology import (

@@ -35,7 +35,9 @@ def docker_output(cmd):
 
 
 def image_size_bytes(image_tag):
-    raw = docker_output(["docker", "image", "inspect", image_tag, "--format", "{{.Size}}"])
+    raw = docker_output(
+        ["docker", "image", "inspect", image_tag, "--format", "{{.Size}}"]
+    )
     return int(raw)
 
 
@@ -53,24 +55,38 @@ def scan_repo_model_artifacts(repo, max_model_bytes, max_total_bytes):
             if size > max_model_bytes:
                 oversized.append((path, size))
     if oversized:
-        first = ", ".join(f"{path}={size / 1024 / 1024:.1f}MiB" for path, size in oversized[:10])
+        first = ", ".join(
+            f"{path}={size / 1024 / 1024:.1f}MiB" for path, size in oversized[:10]
+        )
         raise SystemExit(f"Model artifact exceeds size limit: {first}")
     if total > max_total_bytes:
-        raise SystemExit(f"Total model artifact size exceeds limit: {total / 1024 / 1024:.1f}MiB")
+        raise SystemExit(
+            f"Total model artifact size exceeds limit: {total / 1024 / 1024:.1f}MiB"
+        )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build and run an offline Docker submission.")
-    parser.add_argument("--repo", required=True, help="Candidate repository containing Dockerfile.")
+    parser = argparse.ArgumentParser(
+        description="Build and run an offline Docker submission."
+    )
+    parser.add_argument(
+        "--repo", required=True, help="Candidate repository containing Dockerfile."
+    )
     parser.add_argument("--input-dir", required=True, help="PDF input directory.")
     output_group = parser.add_mutually_exclusive_group(required=True)
-    output_group.add_argument("--output", dest="output_path", help="Host path where predictions should be written.")
+    output_group.add_argument(
+        "--output",
+        dest="output_path",
+        help="Host path where predictions should be written.",
+    )
     output_group.add_argument(
         "--output-csv",
         dest="output_path",
         help="Compatibility alias for --output. The path may still be CSV, JSON, or JSONL.",
     )
-    parser.add_argument("--manifest", help="Optional manifest used to validate output case ids.")
+    parser.add_argument(
+        "--manifest", help="Optional manifest used to validate output case ids."
+    )
     parser.add_argument("--image-tag", default=None)
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=30000)
@@ -165,9 +181,7 @@ def main():
         ]
         if args.require_complete:
             validate_cmd.append("--require-complete")
-        run(
-            validate_cmd
-        )
+        run(validate_cmd)
 
     print(f"Offline Docker submission completed: {output_path}")
 

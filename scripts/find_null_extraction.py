@@ -30,8 +30,8 @@ for pdf_path in tqdm(sorted(pdf_dir.glob("*.pdf")), desc="Processing PDFs"):
 
     for page in results:
 
-        if page["text_source"] == "native_text":
-            continue
+        #if page["text_source"] == "native_text":
+        #    continue
 
         fields = page["extraction"]["fields"]
 

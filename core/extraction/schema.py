@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 DOCUMENT_POSSIBLE_FIELDS = {
     "intake_form": {
         "case_id",

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def extract_unknown(text: str):
 
     return {

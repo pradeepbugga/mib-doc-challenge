@@ -16,6 +16,7 @@ from core.ocr.orientation import (
     score_orientation_candidate,
     try_alternate_orientations,
 )
+from core.ocr.text_layer import get_hidden_text, get_visible_text
 from core.pipeline.case_assignment import (
     extract_case_id_candidates,
 )
@@ -68,7 +69,10 @@ def process_page(
     Process one PDF page through quality routing, text selection,
     selective orientation retry, classification, and extraction.
     """
-    native_text = page.get_text("text")
+    # Only the visible text layer is evidence. White-on-white spans and text
+    # outside the page crop carry prompt injection and fake answer keys.
+    native_text = get_visible_text(page)
+    hidden_text = get_hidden_text(page)
 
     assessment = assess_page_quality(
         doc=doc,
@@ -179,6 +183,7 @@ def process_page(
         "route": route,
         "ocr_result": ocr_result,
         "text": selected_text,
+        "hidden_text": hidden_text,
         "text_source": text_source,
         "classification": classification,
         "extraction": extraction,

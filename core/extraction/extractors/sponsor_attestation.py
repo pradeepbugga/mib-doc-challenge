@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..utils import extract_regex, extract_first
 import re 
 

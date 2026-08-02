@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..utils import extract_regex
 import re
 
@@ -51,7 +53,11 @@ def extract_biometric_slip(text: str) -> dict:
 
         "observed_flags": extract_regex(
             r"Observed\s+flags\s*[:;.-]?\s*"
-            r"([a-z0-9_]+)",
+            # A slip can list more than one flag, pipe-delimited
+            # (e.g. "illegible_biometrics|sponsor_mismatch"). The
+            # character class must include "|" or multi-flag values
+            # silently truncate to the first flag.
+            r"([a-z0-9_|]+)",
             text,
         ),
     }

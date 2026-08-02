@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .extractors.sponsor_attestation import extract_sponsor_attestation
 from .extractors.registry_extract import extract_registry_extract
 from .extractors.adjudicator_note import extract_adjudicator_note

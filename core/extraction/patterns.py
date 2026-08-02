@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 SPONSOR_ID = r"Sponsor ID:\s*(SPN[- ]?\d+)"
 
 APPLICANT = r"Applicant[: ]+(.+)"
