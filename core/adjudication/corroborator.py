@@ -5,6 +5,40 @@ from typing import Iterable
 import re
 
 from core.adjudication.models import FieldObservation, Packet, ResolvedField
+from core.rules.field_rules import EVIDENCE_PRIORITY
+
+# FIELD_MANUAL.md ranks *which document* to believe when two of them disagree;
+# `source_priority` below ranks *how cleanly the text was read*. They are
+# different questions and both matter, so conflicts are settled by document
+# authority first and transcription quality only as a tie-break.
+#
+# The manual's tiers are keyed by evidence kind; these are the page types the
+# classifier actually emits. Two are not in the manual's list:
+#   - fee_receipt: an official visible form and the only authoritative source
+#     for fee_status, so it sits at the intake-form tier.
+#   - unknown: a page that failed to classify. Its provenance is unproven, so
+#     it ranks with the bare machine-readable text layer — usable when nothing
+#     else supplies the field, never able to override a real form.
+DOCUMENT_EVIDENCE_PRIORITY = {
+    "adjudicator_note": EVIDENCE_PRIORITY["signed_manual_note"],
+    "intake_form": EVIDENCE_PRIORITY["intake_form"],
+    "fee_receipt": EVIDENCE_PRIORITY["intake_form"],
+    "biometric_slip": EVIDENCE_PRIORITY["biometric_slip"],
+    "sponsor_attestation": EVIDENCE_PRIORITY["sponsor_attestation"],
+    "registry_extract": EVIDENCE_PRIORITY["registry_extract"],
+    "unknown": EVIDENCE_PRIORITY["machine_readable_text"],
+}
+
+DEFAULT_DOCUMENT_PRIORITY = EVIDENCE_PRIORITY["machine_readable_text"]
+
+
+def document_priority(observation: FieldObservation) -> int:
+    """Return the trusted-evidence rank of the page an observation came from."""
+    return DOCUMENT_EVIDENCE_PRIORITY.get(
+        observation.document_type,
+        DEFAULT_DOCUMENT_PRIORITY,
+    )
+
 
 def normalize_for_comparison(
     value: str,
@@ -120,6 +154,59 @@ def observations_match(
         )
 
     return False
+def cluster_agreeing_observations(
+    observations: list[FieldObservation],
+) -> list[list[FieldObservation]]:
+    """
+    Group observations into clusters that agree on a value.
+
+    Uses `observations_match` rather than exact string equality so a clean
+    native-text value and its noisier OCR twin land in the same cluster.
+    """
+    clusters: list[list[FieldObservation]] = []
+
+    for observation in observations:
+        for cluster in clusters:
+            if observations_match(cluster[0], observation):
+                cluster.append(observation)
+                break
+        else:
+            clusters.append([observation])
+
+    return clusters
+
+
+def best_transcription(
+    cluster: list[FieldObservation],
+) -> FieldObservation:
+    """Return the cleanest-read observation within an agreeing cluster."""
+    return max(cluster, key=source_priority)
+
+
+def cluster_rank(cluster: list[FieldObservation]) -> tuple:
+    """
+    Sort key ranking a cluster's claim to be the resolved value.
+
+    Ordered by document authority, then how many distinct document types back
+    it, then transcription quality.
+    """
+    best_document_priority = min(
+        document_priority(observation) for observation in cluster
+    )
+    distinct_document_types = len(
+        {observation.document_type for observation in cluster}
+    )
+    best_source_priority = max(
+        source_priority(observation) for observation in cluster
+    )
+
+    return (
+        best_document_priority,
+        -distinct_document_types,
+        -best_source_priority,
+    )
+
+
 def corroborate_field(
     field_name: str,
     observations: list[FieldObservation],
@@ -144,41 +231,56 @@ def corroborate_field(
             resolution_method=None,
         )
 
-    ranked = sorted(
-        usable,
-        key=source_priority,
-        reverse=True,
-    )
+    clusters = cluster_agreeing_observations(usable)
 
-    candidate = ranked[0]
+    # Most trusted document wins; ties broken by breadth of corroboration and
+    # then by transcription quality.
+    clusters.sort(key=cluster_rank)
 
-    matching = [
-        observation
-        for observation in usable
-        if observations_match(
-            candidate,
-            observation,
-        )
-    ]
+    winning_cluster = clusters[0]
 
+    matching = winning_cluster
     conflicting = [
         observation
-        for observation in usable
-        if not observations_match(
-            candidate,
-            observation,
-        )
+        for cluster in clusters[1:]
+        for observation in cluster
     ]
 
     if conflicting:
+        winning_priority = min(
+            document_priority(observation)
+            for observation in winning_cluster
+        )
+        runner_up_priority = min(
+            document_priority(observation)
+            for observation in clusters[1]
+        )
+
+        # A more authoritative document settles the disagreement. Equal
+        # authority disagreeing with itself does not — that is a genuine
+        # contradiction and still needs a human.
+        if winning_priority >= runner_up_priority:
+            return ResolvedField(
+                field=field_name,
+                resolved_value=None,
+                status="conflicting",
+                observations=observations,
+                supporting_observations=matching,
+                resolution_method=None,
+            )
+
+        candidate = best_transcription(winning_cluster)
+
         return ResolvedField(
             field=field_name,
-            resolved_value=None,
-            status="conflicting",
+            resolved_value=candidate.normalized_value,
+            status="resolved_by_evidence_priority",
             observations=observations,
             supporting_observations=matching,
-            resolution_method=None,
+            resolution_method="evidence_priority",
         )
+
+    candidate = best_transcription(winning_cluster)
 
     distinct_document_types = {
         observation.document_type
