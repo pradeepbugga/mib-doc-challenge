@@ -164,7 +164,10 @@ def estimate_skew_angle(image: np.ndarray) -> float:
     Estimate the page's small skew angle in degrees.
     """
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
 
     inverted = cv2.bitwise_not(gray)
 
