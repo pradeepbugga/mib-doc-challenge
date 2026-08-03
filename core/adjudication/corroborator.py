@@ -237,6 +237,56 @@ def corroborate_field(
     # then by transcription quality.
     clusters.sort(key=cluster_rank)
 
+    if field_name == "applicant_name" and not any(
+        observation.text_source == "native_text"
+        for observation in clusters[0]
+    ):
+        # Measured 2026-08-03 across the training set: when a native-text
+        # reading of applicant_name disagrees with an OCR reading, truth
+        # matches the native reading in 203/214 (94.9%) of cases, regardless
+        # of which document type either came from and regardless of fuzzy
+        # similarity between the two readings. Document-priority-first
+        # ranking lets a corrupted OCR read of a high-priority document
+        # (e.g. intake_form) beat a clean native read of a lower-priority one
+        # (e.g. sponsor_attestation) -- backwards for this one field.
+        #
+        # This is an early return, not a reorder-and-fall-through: the
+        # conflict check below compares document_priority between "winning"
+        # and runner-up clusters, and a promoted native cluster usually has
+        # WORSE document authority than the OCR cluster it's beating (that's
+        # the whole problem). Letting it fall through made that check see a
+        # lower-authority "winner" losing to a higher-authority runner-up and
+        # report an unresolved conflict, wiping the value to None -- exactly
+        # backwards from the intent. Bypass that check entirely here.
+        native_clusters = [
+            cluster
+            for cluster in clusters[1:]
+            if any(
+                observation.text_source == "native_text"
+                for observation in cluster
+            )
+        ]
+
+        if native_clusters:
+            native_clusters.sort(key=cluster_rank)
+            best_native = native_clusters[0]
+            candidate = best_transcription(best_native)
+            distinct_document_types = {
+                observation.document_type for observation in best_native
+            }
+            status = (
+                "corroborated" if len(distinct_document_types) > 1
+                else "single_source"
+            )
+            return ResolvedField(
+                field=field_name,
+                resolved_value=candidate.normalized_value,
+                status=status,
+                observations=observations,
+                supporting_observations=best_native,
+                resolution_method="native_preferred_over_ocr",
+            )
+
     winning_cluster = clusters[0]
 
     matching = winning_cluster
