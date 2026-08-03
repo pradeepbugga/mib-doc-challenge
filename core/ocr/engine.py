@@ -30,6 +30,22 @@ MIN_DESKEW_ANGLE = 2.0
 # half-toned grid rules that blur character segmentation.
 FAINT_INK_FLOOR = 195
 
+# On a genuinely faint scan the real ink itself can be washed out into the
+# same 195-255 band the floor exists to erase -- confirmed on MIB-000045,
+# MIB-000670, and MIB-000294 (field text measured at ~228, indistinguishable
+# by absolute intensity from the injection band). A fixed floor cannot serve
+# both cases at once. ADAPTIVE_FLOOR_MARGIN/CAP bound how far a per-page
+# floor (see estimate_ink_floor) is allowed to rise above the global default,
+# so a faint page can recover its own ink without opening the floor all the
+# way up to where injection typically renders.
+ADAPTIVE_FLOOR_MARGIN = 12
+ADAPTIVE_FLOOR_CAP = 230
+
+# A page needs at least this share of non-white pixels for its own histogram
+# to be a trustworthy basis for a floor -- an almost-blank page has too little
+# ink to estimate anything from, and should fall back to the global floor.
+MIN_INK_FRACTION_FOR_ADAPTIVE_FLOOR = 0.005
+
 @dataclass(frozen=True)
 class OCRProfile:
     """Empirically selected OCR settings for the challenge documents."""
@@ -245,6 +261,40 @@ def suppress_faint_ink(
     return suppressed
 
 
+def estimate_ink_floor(image: np.ndarray) -> int:
+    """
+    Derive a per-page faint-ink floor from the page's own intensity
+    histogram, for pages where the global FAINT_INK_FLOOR would erase real
+    but faint content along with it. See FAINT_INK_FLOOR and
+    ADAPTIVE_FLOOR_MARGIN/CAP.
+
+    Only ever raises the floor above the global default, never lowers it --
+    a page whose own ink is already dark (the common case) must keep exactly
+    the injection-suppression behavior that floor was tuned for.
+    """
+
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+
+    non_white = gray[gray < 255]
+
+    if non_white.size < gray.size * MIN_INK_FRACTION_FOR_ADAPTIVE_FLOOR:
+        return FAINT_INK_FLOOR
+
+    otsu_threshold, _ = cv2.threshold(
+        non_white.reshape(-1, 1),
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+    )
+
+    candidate = int(otsu_threshold) + ADAPTIVE_FLOOR_MARGIN
+
+    return max(FAINT_INK_FLOOR, min(candidate, ADAPTIVE_FLOOR_CAP))
+
+
 def enhance_contrast(image: np.ndarray) -> np.ndarray:
     """
     Enhance local contrast using CLAHE.
@@ -341,13 +391,19 @@ def preprocess_for_ocr(
             steps.append(f"deskew_{skew_angle:.2f}")
 
     # Must run after orientation/deskew, which need the colour image, and
-    # before CLAHE, which would otherwise amplify the faint layer.
-    processed = suppress_faint_ink(processed)
-    steps.append("suppress_faint_ink")
-
+    # before CLAHE, which would otherwise amplify the faint layer. Only pages
+    # already on the CLAHE path get an adaptive floor -- everything else
+    # keeps the exact global-floor behavior the injection suppression was
+    # tuned against.
     if profile.use_clahe:
+        floor = estimate_ink_floor(processed)
+        processed = suppress_faint_ink(processed, floor=floor)
+        steps.append(f"suppress_faint_ink_{floor}")
         processed = enhance_contrast(processed)
         steps.append("clahe")
+    else:
+        processed = suppress_faint_ink(processed)
+        steps.append("suppress_faint_ink")
 
     return processed, steps
 
