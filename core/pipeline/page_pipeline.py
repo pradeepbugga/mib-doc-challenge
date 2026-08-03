@@ -8,6 +8,7 @@ from core.classification.page_classifier import classify_document_type
 from core.extraction.extractor import extract_fields
 
 from core.ocr.engine import (
+    MIN_DESKEW_ANGLE,
     render_page,
     rotate_image,
     run_ocr,
@@ -19,6 +20,7 @@ from core.ocr.orientation import (
     score_orientation_candidate,
     try_alternate_orientations,
 )
+from core.ocr.geometry import correct_page_geometry, measure_page_geometry
 from core.ocr.tear_repair import align_text_lines, looks_torn, repair_tear
 from core.ocr.text_layer import get_hidden_text, get_visible_text
 from core.pipeline.case_assignment import (
@@ -147,6 +149,79 @@ def try_tear_repair(
         return None
 
 
+def try_geometry_correction(
+    *,
+    page,
+    route,
+    profile,
+    rotation: int,
+):
+    """
+    Evaluate a rotation+shear-corrected render of the page as a candidate.
+
+    `estimate_skew_angle` inside `run_ocr_image`'s preprocessing
+    (`cv2.minAreaRect` over all thresholded foreground) measures rotation
+    only and is unreliable on degraded pages -- see `core/ocr/geometry.py`.
+    The line-detection-based replacement is more accurate, but was measured
+    on the full training set to be a net *regression* when applied
+    unconditionally to every page (-0.08 net score: it helps some pages and
+    hurts others). Scored the same way as tear repair and orientation, so
+    the caller keeps whichever actually reads better and this can never make
+    a page worse -- the property that made the unconditional version unsafe.
+    """
+    try:
+        image = render_page(page=page, dpi=profile.render_dpi)
+
+        if rotation:
+            image = rotate_image(image, clockwise_degrees=rotation)
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        geometry = measure_page_geometry(gray)
+
+        if geometry is None:
+            return None
+
+        if (
+            abs(geometry.rotation) < MIN_DESKEW_ANGLE
+            and abs(geometry.shear) < MIN_DESKEW_ANGLE
+        ):
+            return None
+
+        corrected = correct_page_geometry(image, geometry)
+
+        ocr_result = run_ocr_image(
+            image=corrected,
+            route=route,
+            profile=profile,
+            render_dpi=profile.render_dpi,
+            apply_orientation_detection=False,
+        )
+        text = ocr_result.text or ""
+        classification = classify_document_type(text)
+        extraction = extract_fields(
+            document_type=classification.document_type,
+            text=text,
+        )
+
+        return OrientationCandidate(
+            rotation=rotation,
+            text=text,
+            ocr_result=ocr_result,
+            classification=classification,
+            extraction=extraction,
+            score=score_orientation_candidate(
+                text=text,
+                ocr_result=ocr_result,
+                classification=classification,
+                extraction=extraction,
+            ),
+        )
+    except Exception:
+        # A failed correction must never abort the page.
+        return None
+
+
 def process_page(
     doc: fitz.Document,
     page: fitz.Page,
@@ -171,6 +246,8 @@ def process_page(
     orientation_retry_attempted = False
     tear_repair_attempted = False
     tear_repair_applied = False
+    geometry_correction_attempted = False
+    geometry_correction_applied = False
 
     if route.use_native_text:
         selected_text = native_text
@@ -262,15 +339,40 @@ def process_page(
             rotation=selected_rotation,
         )
 
+        current_score = initial_score
+
         if tear_candidate is not None:
             tear_repair_attempted = True
 
-            if tear_candidate.score > initial_score:
+            if tear_candidate.score > current_score:
                 tear_repair_applied = True
                 selected_text = tear_candidate.text
                 ocr_result = tear_candidate.ocr_result
                 classification = tear_candidate.classification
                 extraction = tear_candidate.extraction
+
+                current_score = tear_candidate.score
+
+        # Rotation+shear correction. Measured as a net regression when
+        # applied unconditionally to every page (helps many, hurts some), so
+        # -- like tear repair -- it is only kept when it scores better than
+        # whatever the current best result is.
+        geometry_candidate = try_geometry_correction(
+            page=page,
+            route=route,
+            profile=selected_profile,
+            rotation=selected_rotation,
+        )
+
+        if geometry_candidate is not None:
+            geometry_correction_attempted = True
+
+            if geometry_candidate.score > current_score:
+                geometry_correction_applied = True
+                selected_text = geometry_candidate.text
+                ocr_result = geometry_candidate.ocr_result
+                classification = geometry_candidate.classification
+                extraction = geometry_candidate.extraction
 
     else:
         selected_text = ""
@@ -302,6 +404,8 @@ def process_page(
         "orientation_retry_attempted": orientation_retry_attempted,
         "tear_repair_attempted": tear_repair_attempted,
         "tear_repair_applied": tear_repair_applied,
+        "geometry_correction_attempted": geometry_correction_attempted,
+        "geometry_correction_applied": geometry_correction_applied,
     }
 
 
