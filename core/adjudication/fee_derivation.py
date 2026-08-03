@@ -19,6 +19,14 @@ The third combination is left alone. Splitting evenly between `unpaid` and
 `unknown` means the receipt genuinely does not say, and guessing `unpaid` there
 would flip the adjudication to DENIED on a coin toss.
 
+The derived value wins even when a `Fee Status` label was already read
+successfully, not only when the label is missing. Some receipts print a
+`Fee Status` word that plainly contradicts their own `Amount`/`Waiver Code` --
+confirmed on 26 training cases where the label disagreed with truth: 10 of
+those also had a readable amount/waiver pair, and the derivation was correct
+on all 10 while the label was wrong on all 10. The label is not just harder to
+read than the sibling fields, it is sometimes an outright decoy.
+
 This mirrors `core.adjudication.risk_derivation`: a post-corroboration step that
 fills a field from sibling evidence rather than from its own label.
 """
@@ -106,17 +114,13 @@ def derive_fee_status(packet: Packet) -> str | None:
 
 
 def augment_fee_status(packet: Packet) -> None:
-    """Fill `fee_status` in place when it is unresolved but derivable."""
+    """Fill or correct `fee_status` from the sibling amount/waiver fields.
+
+    Overrides an already-read `Fee Status` label whenever the sibling fields
+    determine a value -- see the module docstring for why the label is not
+    trusted over them.
+    """
     existing = packet.fields.get("fee_status")
-
-    already_known = (
-        existing is not None
-        and existing.resolved_value is not None
-        and str(existing.resolved_value).strip() not in {"", "unknown"}
-    )
-
-    if already_known:
-        return
 
     derived = derive_fee_status(packet)
 
