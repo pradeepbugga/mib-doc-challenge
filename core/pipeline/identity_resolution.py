@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from typing import Any
 
 from core.adjudication.models import FieldObservation, Packet
@@ -185,6 +186,72 @@ def page_metadata_values(
 
     return values
 
+# A page value this similar to the case value is the same value read badly.
+SAME_VALUE_SIMILARITY = 0.85
+
+# Share of the case value that must survive inside a longer page value.
+CONTAINED_COVERAGE = 0.80
+
+# Only free-text fields are compared loosely. Every other metadata field either
+# has a canonicalising normalizer (species_code, home_world, visa_class) or a
+# fixed shape where a single character carries meaning: SPN-1680 and SPN-1690
+# are 87% similar and are different sponsors.
+FUZZY_MATCH_FIELDS = frozenset({"applicant_name"})
+
+
+def values_compatible(
+    field_name: str,
+    case_value: str,
+    page_values: set[str],
+) -> bool:
+    """
+    Return whether a page's values agree with the case, allowing for OCR noise.
+
+    Comparing exactly manufactures conflicts out of damage. On MIB-000063 the
+    intake form's applicant read as 'Orirx Orivoss Spr~- "te. URION_GRAYS' --
+    one dropped letter, plus the next field's text swallowed by a boundary
+    regex whose anchor had garbled. Against the case's 'Oririx Orivoss' that
+    scored as a conflicting applicant, which blocks assignment outright, so the
+    page holding the only copy of declared_purpose was discarded.
+
+    Two allowances for free-text fields: near-identical strings, and a case
+    value that survives largely intact inside a longer page value. Matching
+    blocks are summed rather than taking the longest, because a single dropped
+    letter splits one run into two. Different applicants share little and still
+    register as conflicts.
+    """
+    if case_value in page_values:
+        return True
+
+    if field_name not in FUZZY_MATCH_FIELDS:
+        return False
+
+    case_lowered = case_value.casefold().strip()
+
+    if not case_lowered:
+        return False
+
+    for page_value in page_values:
+        page_lowered = page_value.casefold().strip()
+
+        if not page_lowered:
+            continue
+
+        matcher = SequenceMatcher(None, case_lowered, page_lowered)
+
+        if matcher.ratio() >= SAME_VALUE_SIMILARITY:
+            return True
+
+        covered = sum(
+            block.size for block in matcher.get_matching_blocks()
+        )
+
+        if covered / len(case_lowered) >= CONTAINED_COVERAGE:
+            return True
+
+    return False
+
+
 def score_page_against_case(
     page_observations: list[FieldObservation],
     packet: Packet,
@@ -210,7 +277,7 @@ def score_page_against_case(
         if case_value is None:
             continue
 
-        if case_value in page_field_values:
+        if values_compatible(field_name, case_value, page_field_values):
             score += METADATA_MATCH_WEIGHTS[field_name]
             matched_fields.append(field_name)
         else:
