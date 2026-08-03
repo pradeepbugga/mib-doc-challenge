@@ -185,29 +185,46 @@ def normalized_value(
 
     return value or None
 
-def resolved_case_values(
+def resolved_case_value_sets(
     packet: Packet,
-) -> dict[str, str]:
+) -> dict[str, set[str]]:
     """
-    Return usable resolved metadata for one provisional case.
+    Return every distinct value observed for one provisional case's
+    metadata, not only whichever one evidence-priority picked as the
+    resolved value.
+
+    A page's own name conflicting with the *resolved* value does not mean
+    it conflicts with the case -- if the intake form and another page
+    disagree on applicant_name (a known decoy pattern for that field, see
+    mib-intake-name-decoy), a third page's reading only needs to match
+    either one to plausibly belong to this case. Comparing against just the
+    precedence winner manufactures a conflict out of a disagreement the
+    packet already contained before this page showed up.
     """
-    values: dict[str, str] = {}
+    values: dict[str, set[str]] = {}
 
     for field_name in METADATA_MATCH_WEIGHTS:
         resolved_field = packet.fields.get(field_name)
 
-        if (
-            resolved_field is None
-            or resolved_field.resolved_value is None
-        ):
+        if resolved_field is None:
             continue
 
-        value = str(
-            resolved_field.resolved_value
-        ).strip()
+        field_values: set[str] = set()
 
-        if value:
-            values[field_name] = value
+        if resolved_field.resolved_value is not None:
+            value = str(resolved_field.resolved_value).strip()
+
+            if value:
+                field_values.add(value)
+
+        for observation in resolved_field.observations:
+            value = normalized_value(observation)
+
+            if value:
+                field_values.add(value)
+
+        if field_values:
+            values[field_name] = field_values
 
     return values
 
@@ -248,27 +265,12 @@ CONTAINED_COVERAGE = 0.80
 FUZZY_MATCH_FIELDS = frozenset({"applicant_name"})
 
 
-def values_compatible(
+def _value_compatible_with_one(
     field_name: str,
     case_value: str,
     page_values: set[str],
 ) -> bool:
-    """
-    Return whether a page's values agree with the case, allowing for OCR noise.
-
-    Comparing exactly manufactures conflicts out of damage. On MIB-000063 the
-    intake form's applicant read as 'Orirx Orivoss Spr~- "te. URION_GRAYS' --
-    one dropped letter, plus the next field's text swallowed by a boundary
-    regex whose anchor had garbled. Against the case's 'Oririx Orivoss' that
-    scored as a conflicting applicant, which blocks assignment outright, so the
-    page holding the only copy of declared_purpose was discarded.
-
-    Two allowances for free-text fields: near-identical strings, and a case
-    value that survives largely intact inside a longer page value. Matching
-    blocks are summed rather than taking the longest, because a single dropped
-    letter splits one run into two. Different applicants share little and still
-    register as conflicts.
-    """
+    """Return whether a page's values agree with one candidate case value."""
     if case_value in page_values:
         return True
 
@@ -301,6 +303,37 @@ def values_compatible(
     return False
 
 
+def values_compatible(
+    field_name: str,
+    case_values: set[str],
+    page_values: set[str],
+) -> bool:
+    """
+    Return whether a page's values agree with the case, allowing for OCR noise.
+
+    Comparing exactly manufactures conflicts out of damage. On MIB-000063 the
+    intake form's applicant read as 'Orirx Orivoss Spr~- "te. URION_GRAYS' --
+    one dropped letter, plus the next field's text swallowed by a boundary
+    regex whose anchor had garbled. Against the case's 'Oririx Orivoss' that
+    scored as a conflicting applicant, which blocks assignment outright, so the
+    page holding the only copy of declared_purpose was discarded.
+
+    Two allowances for free-text fields: near-identical strings, and a case
+    value that survives largely intact inside a longer page value. Matching
+    blocks are summed rather than taking the longest, because a single dropped
+    letter splits one run into two. Different applicants share little and still
+    register as conflicts.
+
+    `case_values` is every distinct value observed for this case (see
+    `resolved_case_value_sets`), not just the precedence winner -- a match
+    against any one of them counts as compatible.
+    """
+    return any(
+        _value_compatible_with_one(field_name, case_value, page_values)
+        for case_value in case_values
+    )
+
+
 def score_page_against_case(
     page_observations: list[FieldObservation],
     packet: Packet,
@@ -314,19 +347,19 @@ def score_page_against_case(
     page_values = page_metadata_values(
         page_observations
     )
-    case_values = resolved_case_values(packet)
+    case_values = resolved_case_value_sets(packet)
 
     score = 0.0
     matched_fields: list[str] = []
     conflicting_fields: list[str] = []
 
     for field_name, page_field_values in page_values.items():
-        case_value = case_values.get(field_name)
+        case_value_set = case_values.get(field_name)
 
-        if case_value is None:
+        if case_value_set is None:
             continue
 
-        if values_compatible(field_name, case_value, page_field_values):
+        if values_compatible(field_name, case_value_set, page_field_values):
             score += METADATA_MATCH_WEIGHTS[field_name]
             matched_fields.append(field_name)
         else:
