@@ -19,7 +19,7 @@ from core.ocr.orientation import (
     score_orientation_candidate,
     try_alternate_orientations,
 )
-from core.ocr.tear_repair import looks_torn, repair_tear
+from core.ocr.tear_repair import align_text_lines, looks_torn, repair_tear
 from core.ocr.text_layer import get_hidden_text, get_visible_text
 from core.pipeline.case_assignment import (
     extract_case_id_candidates,
@@ -73,10 +73,18 @@ def try_tear_repair(
     rotation: int,
 ):
     """
-    Evaluate a tear-repaired render of the page, or None if not applicable.
+    Evaluate repaired renders of the page and return the best candidate.
 
-    Returns an OrientationCandidate so the caller can compare it against the
-    already-selected result using the same scoring.
+    Two repairs are offered because the damage comes in two shapes. Band
+    repair handles a tear that cuts through glyphs, where the page border
+    tracks the displacement. Line alignment handles a tear that falls between
+    text lines, where the border test has nothing to corroborate against and
+    every real boundary is rejected — the case on MIB-000039 page 2, whose
+    field lines are each visibly offset yet yielded 0 of 37 confirmed
+    boundaries.
+
+    Both are scored like an alternate orientation, so the caller keeps
+    whichever actually reads better and neither can make a page worse.
     """
     try:
         image = render_page(page=page, dpi=profile.render_dpi)
@@ -86,41 +94,54 @@ def try_tear_repair(
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        if not looks_torn(gray):
-            return None
+        variants = []
 
-        repaired, moved = repair_tear(gray)
+        if looks_torn(gray):
+            repaired, moved = repair_tear(gray)
 
-        if not moved:
-            return None
+            if moved:
+                variants.append(repaired)
 
-        ocr_result = run_ocr_image(
-            image=repaired,
-            route=route,
-            profile=profile,
-            render_dpi=profile.render_dpi,
-            apply_orientation_detection=False,
-        )
-        text = ocr_result.text or ""
-        classification = classify_document_type(text)
-        extraction = extract_fields(
-            document_type=classification.document_type,
-            text=text,
-        )
+        aligned, lines_moved = align_text_lines(gray)
 
-        return OrientationCandidate(
-            rotation=rotation,
-            text=text,
-            ocr_result=ocr_result,
-            classification=classification,
-            extraction=extraction,
-            score=score_orientation_candidate(
+        if lines_moved:
+            variants.append(aligned)
+
+        best = None
+
+        for variant in variants:
+            ocr_result = run_ocr_image(
+                image=variant,
+                route=route,
+                profile=profile,
+                render_dpi=profile.render_dpi,
+                apply_orientation_detection=False,
+            )
+            text = ocr_result.text or ""
+            classification = classify_document_type(text)
+            extraction = extract_fields(
+                document_type=classification.document_type,
+                text=text,
+            )
+
+            candidate = OrientationCandidate(
+                rotation=rotation,
                 text=text,
                 ocr_result=ocr_result,
                 classification=classification,
                 extraction=extraction,
-            ),
-        )
+                score=score_orientation_candidate(
+                    text=text,
+                    ocr_result=ocr_result,
+                    classification=classification,
+                    extraction=extraction,
+                ),
+            )
+
+            if best is None or candidate.score > best.score:
+                best = candidate
+
+        return best
     except Exception:
         # A failed repair must never abort the page.
         return None

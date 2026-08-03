@@ -70,6 +70,14 @@ DOCUMENT_LABELS: dict[str, dict[str, str]] = {
         "Sponsor ID": "sponsor_id",
         "Arrival Date": "arrival_date",
         "Declared Purpose": "declared_purpose",
+        # Damage often takes the first word of a two-word label with it, and
+        # the surviving half is then too short to match the full phrase:
+        # "Declared Purpose" reaching OCR as "Pei Pupose" matches neither.
+        # Only distinctive second words are aliased — "Code", "Class", "ID",
+        # "Date" and "Status" each belong to several labels and would
+        # mis-assign.
+        "Purpose": "declared_purpose",
+        "World": "home_world",
     },
     "fee_receipt": {
         "Case ID": "case_id",

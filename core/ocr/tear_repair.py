@@ -40,6 +40,18 @@ MIN_BAND_HEIGHT = 10
 # Offset spread below this means the page is not meaningfully torn.
 TEAR_SPREAD_THRESHOLD = 30.0
 
+# Row must carry more than this much ink to count as part of a text line.
+MIN_LINE_INK = 4
+
+# Shorter runs of inked rows are speckle, not a line of text.
+MIN_LINE_HEIGHT = 6
+
+# Left-edge alignment needs a few lines before its median means anything.
+MIN_ALIGNABLE_LINES = 3
+
+# Left-edge displacement below this is within normal glyph variation.
+MIN_LINE_SHIFT = 3
+
 
 # How far a tracked border may drift between adjacent rows and still be the
 # same object. Wider than this and we are looking at a different mark.
@@ -405,6 +417,108 @@ def snap_bands_to_text_gaps(
         snapped.append((new_top, bottom, shift))
 
     return [band for band in snapped if band[1] > band[0]]
+
+
+def detect_text_lines(
+    gray: np.ndarray,
+    left_margin: float = 0.05,
+    right_margin: float = 0.80,
+) -> tuple[list[tuple[int, int]], np.ndarray, int]:
+    """Group rows into text lines, ignoring page margins and horizontal rules."""
+    height, width = gray.shape
+
+    binary = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )[1]
+
+    rules = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (80, 1)),
+        iterations=1,
+    )
+    text = cv2.subtract(binary, rules)
+
+    start_x = int(width * left_margin)
+    ink = (text[:, start_x: int(width * right_margin)] > 0).sum(axis=1)
+    inked = ink > MIN_LINE_INK
+
+    lines: list[tuple[int, int]] = []
+    y = 0
+
+    while y < height:
+        if not inked[y]:
+            y += 1
+            continue
+
+        top = y
+
+        while y < height and inked[y]:
+            y += 1
+
+        if y - top >= MIN_LINE_HEIGHT:
+            lines.append((top, y))
+
+    return lines, text, start_x
+
+
+def align_text_lines(gray: np.ndarray) -> tuple[np.ndarray, int]:
+    """
+    Repair tearing by aligning each text line's left edge.
+
+    The band-based repair measures the page border and asks whether body text
+    moved with it. That test only works when a tear cuts through a glyph, so
+    both sides of the boundary are the same letters. When the tear falls
+    between lines — the common case — it compares the bottom of one line with
+    the top of a different one, which correlates at nothing, and every real
+    boundary is rejected. On MIB-000039 page 2 that left 0 of 37 candidates
+    confirmed on a page whose every field line is visibly offset.
+
+    These forms label every field at the same left margin, so a line's left
+    edge is its displacement directly, with no boundary detection needed.
+    """
+    edges: list[tuple[int, int, int | None]] = []
+    lines, text, start_x = detect_text_lines(gray)
+
+    for top, bottom in lines:
+        columns = np.nonzero(text[top:bottom].sum(axis=0))[0]
+        columns = columns[columns >= start_x]
+        edges.append(
+            (top, bottom, int(columns[0]) if len(columns) else None)
+        )
+
+    measured = [left for _, _, left in edges if left is not None]
+
+    if len(measured) < MIN_ALIGNABLE_LINES:
+        return gray, 0
+
+    reference = int(np.median(measured))
+    height, width = gray.shape
+
+    aligned = gray.copy()
+    moved = 0
+
+    for top, bottom, left in edges:
+        if left is None:
+            continue
+
+        shift = left - reference
+
+        if abs(shift) < MIN_LINE_SHIFT or abs(shift) > MAX_SHIFT:
+            continue
+
+        line = gray[top:bottom]
+        shifted = np.full_like(line, 255)
+
+        if shift > 0:
+            shifted[:, : width - shift] = line[:, shift:]
+        else:
+            shifted[:, -shift:] = line[:, : width + shift]
+
+        aligned[top:bottom] = shifted
+        moved += 1
+
+    return aligned, moved
 
 
 def repair_tear(gray: np.ndarray) -> tuple[np.ndarray, int]:
