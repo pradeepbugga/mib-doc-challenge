@@ -163,7 +163,17 @@ def route_page_quality(
             detect_orientation=True,
             rotate=True,
             deskew=True,
-            enhance_contrast=False, # we make this False because we want to enhance contrast in the OCR step, not here
+            # select_ocr_profile() is the only consumer of this flag, and it
+            # maps enhance_contrast straight to OCRProfile.use_clahe -- there
+            # is no other contrast step downstream despite what the old
+            # comment here claimed. Hardcoding False meant scan_degraded
+            # pages, the ones that need it most, never got CLAHE. Confirmed
+            # on MIB-000294 p2 (visual_contrast 10.48 vs the 25.0 threshold):
+            # baseline OCR confidence 63.25 on unreadable garbage; CLAHE
+            # alone raised it to 84.76 and produced a clean read of
+            # "Finding: DENIED. Reason: Disqualifying risk flag
+            # biohazard_red." Match Routes 2 and 5's pattern.
+            enhance_contrast=assessment.low_contrast,
             denoise=True,
             threshold=True,
             reason=(
