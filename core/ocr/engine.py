@@ -545,12 +545,20 @@ def run_ocr_image(
                 f"deskew_{skew_angle:.2f}"
             )
 
-    processed = suppress_faint_ink(processed)
-    preprocessing_steps.append("suppress_faint_ink")
-
+    # Duplicates preprocess_for_ocr's faint-ink/CLAHE handling rather than
+    # calling it, since this path also runs deskew and orientation inline
+    # above -- kept in sync with the same adaptive-floor logic so retry
+    # candidates (geometry correction, orientation retries) get the same
+    # faint-scan recovery as the primary OCR pass.
     if selected_profile.use_clahe:
+        floor = estimate_ink_floor(processed)
+        processed = suppress_faint_ink(processed, floor=floor)
+        preprocessing_steps.append(f"suppress_faint_ink_{floor}")
         processed = enhance_contrast(processed)
         preprocessing_steps.append("clahe")
+    else:
+        processed = suppress_faint_ink(processed)
+        preprocessing_steps.append("suppress_faint_ink")
 
     text, average_confidence, word_count = extract_ocr_data(
         image=processed,
