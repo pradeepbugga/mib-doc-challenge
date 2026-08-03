@@ -53,6 +53,15 @@ REVOKED_SPONSORS = MANUAL_REVOKED_SPONSORS | INFERRED_REVOKED_SPONSORS
 # Visa classes whose work authorization is denied by default.
 TRANSIT_VISA_CLASSES = frozenset({"TRANSIT-7"})
 
+# Staleness reference ("packet receipt" date). No document in any packet ever
+# states this explicitly, so it is a policy constant learned from the training
+# labels the same way REVOKED_SPONSORS is: max(arrival_date) across train is
+# 2026-07-12, and the gap-from-that-date histogram has a clean dead zone from
+# 179 to 214 days -- 0 of 1000 rows fall in it, versus a smooth distribution on
+# either side. That gap is much wider than measurement noise, so treat this as
+# the intended reference date rather than train-set variance.
+PACKET_RECEIPT_REFERENCE_DATE = date(2026, 7, 12)
+
 # Fee states that settle, deny, or stall a packet.
 ACCEPTABLE_FEE_STATES = frozenset({"paid", "waived"})
 
@@ -125,8 +134,11 @@ def normalize_decision(value) -> str | None:
 
 def is_stale(arrival_date: str | None, received: date | None) -> bool:
     """Return whether an arrival date is older than the staleness window."""
-    if not arrival_date or received is None:
+    if not arrival_date:
         return False
+
+    if received is None:
+        received = PACKET_RECEIPT_REFERENCE_DATE
 
     try:
         arrived = date.fromisoformat(str(arrival_date))
@@ -171,7 +183,23 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 2. Any disqualifying risk flag denies outright (186/186 on train).
+    # 2. A stale application denies outright unless DIP-1 carries the
+    #    exception (FIELD_MANUAL.md's "Date Rules"). On train this is exact:
+    #    36/36 non-DIP-1 stale packets are DENIED regardless of what else is
+    #    on the packet -- including ones that also carry a review-only flag,
+    #    which would otherwise only earn NEEDS_REVIEW -- so staleness has to
+    #    run ahead of every rule below that could produce something softer.
+    #    16/16 DIP-1 stale packets are never DENIED, matching the exemption.
+    if visa_class != "DIP-1" and is_stale(arrival_date, received_date):
+        return Adjudication(
+            decision=DENIED,
+            confidence=0.90,
+            rule="stale_application",
+            rationale="Arrival date precedes the 180-day staleness window.",
+            evidence=evidence,
+        )
+
+    # 3. Any disqualifying risk flag denies outright (186/186 on train).
     disqualifying = flags & DISQUALIFYING_RISK_FLAGS
 
     if disqualifying:
@@ -186,7 +214,7 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 3. Transit visas do not carry work authorization (53/53 on train).
+    # 4. Transit visas do not carry work authorization (53/53 on train).
     if visa_class in TRANSIT_VISA_CLASSES:
         return Adjudication(
             decision=DENIED,
@@ -196,7 +224,7 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 4. An unpaid mandatory fee denies (50/50 on train).
+    # 5. An unpaid mandatory fee denies (50/50 on train).
     if fee_status == "unpaid":
         return Adjudication(
             decision=DENIED,
@@ -206,9 +234,13 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 5. A revoked sponsor denies. Weaker than the rules above because a later
-    #    signed note can override it, so the confidence is lower to match.
-    if sponsor_id in REVOKED_SPONSORS:
+    # 6. A revoked sponsor denies -- except under DIP-1, which does not
+    #    require a sponsor at all (rule 8 below), so a revoked one carries no
+    #    weight there. On train this split is exact: 79/79 non-DIP-1 revoked-
+    #    sponsor cases are DENIED, 0/24 DIP-1 ones are. Also weaker than the
+    #    rules above because a later signed note can override it, so the
+    #    confidence is lower to match.
+    if sponsor_id in REVOKED_SPONSORS and visa_class != "DIP-1":
         return Adjudication(
             decision=DENIED,
             confidence=0.76,
@@ -217,7 +249,7 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 6. An unsettled fee cannot be adjudicated (44/44 NEEDS_REVIEW on train).
+    # 7. An unsettled fee cannot be adjudicated (44/44 NEEDS_REVIEW on train).
     if fee_status == "unknown" or fee_status is None:
         return Adjudication(
             decision=NEEDS_REVIEW,
@@ -227,7 +259,7 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 7. Review-only flags stall the packet rather than denying it.
+    # 8. Review-only flags stall the packet rather than denying it.
     review_flags = flags & REVIEW_ONLY_RISK_FLAGS
 
     if review_flags:
@@ -242,7 +274,7 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 8. A sponsor is required outside DIP-1.
+    # 9. A sponsor is required outside DIP-1.
     if visa_class != "DIP-1" and not sponsor_id:
         return Adjudication(
             decision=NEEDS_REVIEW,
@@ -252,7 +284,7 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
             evidence=evidence,
         )
 
-    # 9. Missing or contradictory decision-critical evidence.
+    # 10. Missing or contradictory decision-critical evidence.
     unresolved = [
         name
         for name in DECISION_CRITICAL_FIELDS
@@ -269,16 +301,6 @@ def adjudicate(packet, *, received_date: date | None = None) -> Adjudication:
                 "Missing or contradictory evidence for: "
                 + ", ".join(unresolved)
             ),
-            evidence=evidence,
-        )
-
-    # 10. A stale application needs review unless DIP-1 carries the exception.
-    if visa_class != "DIP-1" and is_stale(arrival_date, received_date):
-        return Adjudication(
-            decision=NEEDS_REVIEW,
-            confidence=0.65,
-            rule="stale_application",
-            rationale="Arrival date precedes the 180-day staleness window.",
             evidence=evidence,
         )
 
