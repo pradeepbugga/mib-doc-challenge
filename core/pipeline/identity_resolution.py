@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from typing import Any
@@ -88,6 +88,18 @@ def choose_structural_case_id(
     return None, "unassigned"
 
 
+# A page's own case id reading this close to a case id shared by other pages
+# in the same packet is OCR noise, not a second applicant -- confirmed on
+# MIB-000557 page 4 (biometric_slip, OCR): its internal field read
+# "MIB-O00657" against the packet's actual "MIB-000557" (0.90 similar), which
+# silently formed its own single-page phantom case and discarded a
+# correctly-read biohazard_red flag along with it. Native text is trusted
+# exactly here, same as FUZZY_MATCH_FIELDS does for applicant_name --
+# relaxing a native-text case id disagreement would defeat the reason this
+# system exists (telling apart two real applicants sharing one packet).
+CASE_ID_SIMILARITY = 0.85
+
+
 def resolve_initial_identities(
     page_results: list[dict[str, Any]],
 ) -> IdentityResolutionResult:
@@ -95,13 +107,50 @@ def resolve_initial_identities(
     pages_by_case_id: dict[str, list[int]] = defaultdict(list)
     unassigned_pages: list[int] = []
 
+    raw_assignments: list[
+        tuple[int, str | None, str, CaseIdCandidates, str | None]
+    ] = []
+    id_counts: Counter[str] = Counter()
+
     for result in page_results:
         page_number = result["page_number"]
         candidates = result["case_id_candidates"]
+        text_source = result.get("text_source")
 
         case_id, method = choose_structural_case_id(
             candidates
         )
+
+        raw_assignments.append(
+            (page_number, case_id, method, candidates, text_source)
+        )
+
+        if case_id is not None:
+            id_counts[case_id] += 1
+
+    # Case ids two or more pages agree on are the packet's real identity --
+    # only those are trusted as a target for the fuzzy rescue below.
+    established_ids = [
+        case_id for case_id, count in id_counts.items() if count > 1
+    ]
+
+    for page_number, case_id, method, candidates, text_source in raw_assignments:
+        if (
+            case_id is not None
+            and id_counts[case_id] == 1
+            and text_source == "ocr"
+        ):
+            for established_id in established_ids:
+                if (
+                    established_id != case_id
+                    and SequenceMatcher(
+                        None, case_id, established_id
+                    ).ratio()
+                    >= CASE_ID_SIMILARITY
+                ):
+                    case_id = None
+                    method = "ocr_near_miss_relaxed"
+                    break
 
         assignment = PageIdentityAssignment(
             page_number=page_number,
