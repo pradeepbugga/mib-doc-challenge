@@ -21,8 +21,10 @@ from core.ocr.orientation import (
     try_alternate_orientations,
 )
 from core.ocr.geometry import correct_page_geometry, measure_page_geometry
+from core.ocr.line_retry import extract_ocr_lines, retry_missing_fields
 from core.ocr.tear_repair import align_text_lines, looks_torn, repair_tear
 from core.ocr.text_layer import get_hidden_text, get_visible_text
+from core.extraction.schema import DOCUMENT_REQUIRED_FIELDS
 from core.pipeline.case_assignment import (
     extract_case_id_candidates,
 )
@@ -248,6 +250,8 @@ def process_page(
     tear_repair_applied = False
     geometry_correction_attempted = False
     geometry_correction_applied = False
+    line_retry_attempted = False
+    line_retry_applied = False
 
     if route.use_native_text:
         selected_text = native_text
@@ -374,6 +378,66 @@ def process_page(
                 classification = geometry_candidate.classification
                 extraction = geometry_candidate.extraction
 
+        # Localized retry for one expected field whose own line stayed
+        # garbled while the rest of the page read fine -- see
+        # core.ocr.line_retry. Only fires when a required field for this
+        # document type is still missing, so it never runs on a page that
+        # already extracted cleanly. Strictly additive: fills gaps only,
+        # never overwrites a field extraction already read.
+        if (
+            not tear_repair_applied
+            and DOCUMENT_REQUIRED_FIELDS.get(classification.document_type)
+            and any(
+                not extraction.get("fields", {}).get(name)
+                for name in DOCUMENT_REQUIRED_FIELDS[
+                    classification.document_type
+                ]
+            )
+        ):
+            try:
+                retry_image = render_page(
+                    page=page,
+                    dpi=selected_profile.render_dpi,
+                )
+
+                if selected_rotation:
+                    retry_image = rotate_image(
+                        retry_image,
+                        clockwise_degrees=selected_rotation,
+                    )
+
+                # Always attempt geometry correction here regardless of
+                # whether it won in the main flow above -- this is a
+                # separate, self-contained legibility pass focused on one
+                # missing line, not a reconstruction of whatever path
+                # produced the current extraction, so it doesn't need to
+                # match it.
+                retry_gray = cv2.cvtColor(
+                    retry_image, cv2.COLOR_BGR2GRAY
+                )
+                retry_geometry = measure_page_geometry(retry_gray)
+
+                if retry_geometry is not None:
+                    retry_image = correct_page_geometry(
+                        retry_image, retry_geometry
+                    )
+
+                lines = extract_ocr_lines(retry_image)
+                line_retry_attempted = True
+                recovered = retry_missing_fields(
+                    image=retry_image,
+                    document_type=classification.document_type,
+                    fields=extraction.get("fields", {}),
+                    lines=lines,
+                )
+
+                if recovered:
+                    line_retry_applied = True
+                    extraction["fields"].update(recovered)
+            except Exception:
+                # A failed retry must never abort the page.
+                pass
+
     else:
         selected_text = ""
         text_source = "none"
@@ -406,6 +470,8 @@ def process_page(
         "tear_repair_applied": tear_repair_applied,
         "geometry_correction_attempted": geometry_correction_attempted,
         "geometry_correction_applied": geometry_correction_applied,
+        "line_retry_attempted": line_retry_attempted,
+        "line_retry_applied": line_retry_applied,
     }
 
 
