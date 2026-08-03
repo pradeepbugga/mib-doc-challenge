@@ -10,6 +10,7 @@ from typing import Any
 import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
+from core.ocr.text_layer import get_visible_text
 from core.quality.models import PageQualityAssessment
 
 # ---------------------------------------------------------------------
@@ -241,9 +242,22 @@ def assess_page_quality(
     visual_contrast = calculate_visual_contrast(rendered_page)
     visual_sharpness = calculate_visual_sharpness(rendered_page)
 
+    # Sufficiency for trusting the text layer is judged on the *visible*
+    # text, not the raw text -- get_visible_text already strips injected
+    # spans (white-on-white, off-crop) the same way process_page's actual
+    # extraction does, so a page with real content plus an injected
+    # instruction should be judged on the real content alone. Confirmed on
+    # MIB-000890 p2: raw native text tripped detect_suspicious_text, which
+    # discarded the entire native layer and forced OCR -- but the visible
+    # text alone (Registry Name / Orinax Miravara / ...) was clean and
+    # complete; the OCR fallback produced a scrambled read of the same page.
+    visible_text = get_visible_text(page)
+    visible_character_count = len(normalize_text(visible_text))
+    visible_word_count = len(visible_text.split())
+
     has_enough_native_text = (
-        native_word_count >= MIN_NATIVE_WORDS
-        and native_character_count >= MIN_NATIVE_CHARACTERS
+        visible_word_count >= MIN_NATIVE_WORDS
+        and visible_character_count >= MIN_NATIVE_CHARACTERS
     )
 
     low_contrast = visual_contrast < LOW_CONTRAST_THRESHOLD
@@ -337,9 +351,13 @@ def assess_page_quality(
     # Text-layer trust and extraction routing
     # -------------------------------------------------------------
 
+    # suspicious_text_layer no longer vetoes usability on its own --
+    # has_enough_native_text is already computed on the visible (injection-
+    # filtered) text above, so a page can carry an injected instruction and
+    # still have its real content trusted. suspicious_text_layer is kept on
+    # the assessment for diagnostics/reporting.
     native_text_usable = (
         has_enough_native_text
-        and not suspicious_text_layer
         and quality_class in {
             "digital_clean",
             "mixed_content",
