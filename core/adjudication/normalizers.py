@@ -317,7 +317,7 @@ def best_flag_match(value: str) -> str | None:
     best_score, best_flag = scores[0]
     second_score = scores[1][0]
 
-    if best_score < 0.72:
+    if best_score < 0.65:
         return None
 
     if best_score - second_score < 0.08:
