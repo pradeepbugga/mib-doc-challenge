@@ -12,7 +12,7 @@ REGISTRY_BOUNDARY = (
     r"Home\s+World|"
     r"Species\s+Code|"
     r"Registry\s+Status|"
-    r"(?:Arrival|Arival|Amival|Antval)\s+Date|"
+    r"(?:Arrival|Antval|Amival|Arnval|Ariival|Arival)\s+Date|"
     r"REGISTRY\s+IMAGE|"
     r"Packet"
     r")\b|$)"
@@ -52,7 +52,7 @@ def extract_registry_extract(text: str) -> dict:
         ),
 
         "arrival_date": extract_regex(
-            r"(?:Arrival|Arival|Amival|Antval)\s+Date"
+            r"(?:Arrival|Antval|Amival|Arnval|Ariival|Arival)\s+Date"
             r"\s*[:;.-]?\s*"
             r"(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})",
             text,

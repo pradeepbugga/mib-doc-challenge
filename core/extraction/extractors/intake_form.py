@@ -11,7 +11,7 @@ INTAKE_FIELD_BOUNDARY = (
     r"Home\s+World|"
     r"Visa\s+(?:Class|Close)|"
     r"Sponsor\s+(?:ID|1D|10)|"
-    r"(?:Arrival|Antval|Amival|Arnval|Ariival)\s+Date|"
+    r"(?:Arrival|Antval|Amival|Arnval|Ariival|Arival)\s+Date|"
     r"Declared\s+Purpose|"
     r"PASSPORT\s+IMAGE|"
     r"Manual\s+correction\s*:|"
@@ -73,7 +73,7 @@ def extract_intake_form(text: str) -> dict:
         ),
 
         "arrival_date": extract_regex(
-            r"(?:Arrival|Antval|Amival|Arnval|Ariival)\s+Date"
+            r"(?:Arrival|Antval|Amival|Arnval|Ariival|Arival)\s+Date"
             r"\s*[:;.-]?\s*"
             r"(\d{4}[-.]\d{2}[-.]\d{2})",
             text,
