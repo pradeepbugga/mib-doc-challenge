@@ -193,6 +193,7 @@ def process_packet(pdf_path: Path) -> PacketResult:
         initial_result=identity_result,
         observations=observations,
         provisional_cases=provisional_cases,
+        expected_case_id=expected_case_id,
     )
     refined = refinement.identity_result
 

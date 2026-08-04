@@ -415,6 +415,7 @@ def refine_identities_with_metadata(
     initial_result: IdentityResolutionResult,
     observations: list[FieldObservation],
     provisional_cases: dict[str, Packet],
+    expected_case_id: str | None = None,
 ) -> IdentityRefinementResult:
     """
     Assign previously unassigned pages using corroborated metadata.
@@ -442,6 +443,43 @@ def refine_identities_with_metadata(
 
     remaining_unassigned: list[int] = []
     linkage_results: dict[int, MetadataLinkResult] = {}
+
+    # No page anywhere in the packet found a structural case id -- footer,
+    # header, and internal field all failed on every page. provisional_cases
+    # is empty, so the per-page metadata scoring below has nothing to score
+    # against and every unassigned page would fall through to
+    # "remaining_unassigned", losing the whole packet's extraction even when
+    # individual pages read fine (confirmed on MIB-000058: all 5 pages
+    # unassigned, page 4's declared_purpose read correctly but the packet
+    # returned empty fields end to end). There is no ambiguity risk here --
+    # with zero resolved cases there is no wrong case to pick -- so every
+    # page goes to the filename-derived expected_case_id directly.
+    if not provisional_cases and expected_case_id:
+        for page_number in initial_result.unassigned_pages:
+            assignments[page_number] = replace(
+                assignments[page_number],
+                case_id=expected_case_id,
+                assignment_method="expected_case_fallback",
+            )
+            pages_by_case_id.setdefault(
+                expected_case_id, []
+            ).append(page_number)
+            linkage_results[page_number] = MetadataLinkResult(
+                page_number=page_number,
+                assigned_case_id=expected_case_id,
+                best_score=0.0,
+                second_best_score=0.0,
+                assignment_method="expected_case_fallback",
+            )
+
+        return IdentityRefinementResult(
+            identity_result=IdentityResolutionResult(
+                assignments=assignments,
+                pages_by_case_id=pages_by_case_id,
+                unassigned_pages=[],
+            ),
+            linkage_results=linkage_results,
+        )
 
     # A packet that resolved to exactly one case has no ambiguity for an
     # orphan page to fall foul of.
