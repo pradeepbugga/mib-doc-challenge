@@ -5,7 +5,21 @@ from typing import Iterable
 import re
 
 from core.adjudication.models import FieldObservation, Packet, ResolvedField
-from core.rules.field_rules import EVIDENCE_PRIORITY
+from core.rules.field_rules import EVIDENCE_PRIORITY, FIELD_RULES
+
+# Fields with a known required shape (currently just sponsor_id's SPN-####).
+# A higher-priority document's reading that doesn't even match this shape is
+# not a trustworthy disagreement, usually a truncated/faded read (confirmed
+# on MIB-000670: intake_form's faint "SPN-3677" OCR'd as "SPN-3", and evidence
+# priority picked that malformed value over sponsor_attestation's clean,
+# pattern-valid "SPN-3677" simply because intake_form outranks it). Document
+# priority is meant to reflect trust in a clean reading, not blind precedence
+# when the reading is visibly incomplete.
+FIELD_PATTERNS = {
+    name: re.compile(rule["pattern"])
+    for name, rule in FIELD_RULES.items()
+    if rule.get("pattern")
+}
 
 # FIELD_MANUAL.md ranks *which document* to believe when two of them disagree;
 # `source_priority` below ranks *how cleanly the text was read*. They are
@@ -236,6 +250,39 @@ def corroborate_field(
     # Most trusted document wins; ties broken by breadth of corroboration and
     # then by transcription quality.
     clusters.sort(key=cluster_rank)
+
+    pattern = FIELD_PATTERNS.get(field_name)
+
+    if pattern is not None and not pattern.fullmatch(
+        str(best_transcription(clusters[0]).normalized_value or "")
+    ):
+        # The winning cluster's reading doesn't match this field's required
+        # shape. Same early-return bypass as the applicant_name case below,
+        # for the same reason: the promoted cluster usually has *worse*
+        # document authority than the malformed one it's replacing, so
+        # falling through to the normal conflict check would see a
+        # lower-priority "winner" losing to a higher-priority runner-up and
+        # wipe the value to None -- exactly backwards from the intent.
+        for cluster in clusters[1:]:
+            candidate = best_transcription(cluster)
+
+            if pattern.fullmatch(str(candidate.normalized_value or "")):
+                distinct_document_types = {
+                    observation.document_type for observation in cluster
+                }
+                status = (
+                    "corroborated" if len(distinct_document_types) > 1
+                    else "single_source"
+                )
+
+                return ResolvedField(
+                    field=field_name,
+                    resolved_value=candidate.normalized_value,
+                    status=status,
+                    observations=observations,
+                    supporting_observations=cluster,
+                    resolution_method="shape_valid_preferred_over_malformed",
+                )
 
     if field_name == "applicant_name" and not any(
         observation.text_source == "native_text"
