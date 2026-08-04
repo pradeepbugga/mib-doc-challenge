@@ -10,6 +10,7 @@ from core.adjudication.ontology import (
     VALID_VISA_CLASSES,
     best_vocabulary_match,
 )
+from core.extraction.missing_registry import EXPECTED_MISSING_MARKERS
 
 import unicodedata
 import re
@@ -76,6 +77,59 @@ def normalize_declared_purpose(
         minimum_score=0.72,
         minimum_margin=0.08,
     )
+
+APPLICANT_NAME_MARKERS = [
+    marker.upper().strip("[]")
+    for marker in EXPECTED_MISSING_MARKERS.get("applicant", set())
+]
+
+APPLICANT_MARKER_MIN_SCORE = 0.65
+
+
+def normalize_applicant_name(value: str | None) -> str | None:
+    """
+    Strip whitespace and null out known unrecoverable-name markers.
+
+    Unlike declared_purpose/home_world/species_code/visa_class, applicant
+    names have no closed vocabulary to fuzzy-match against, so this can't
+    validate content the way those do -- it only catches the literal
+    placeholder text (e.g. "[NAME CUT OUT]") the synthetic generator writes
+    when a name is genuinely unrecoverable, so that text doesn't get
+    submitted as if it were a real prediction and corroboration can fall
+    through to another page's evidence instead.
+
+    Matches fuzzily against just the value's own prefix, not exact/substring
+    equality: surveying the full training set turned up the marker itself
+    getting OCR-corrupted in the same packet -- bracket swapped for a paren
+    or brace ("(NAME CUT OUT]", "[NAME CUT OUT)"), a character misread
+    inside the word ("[NAME CUT OLIT"), a dropped closing bracket
+    ("[NAME CUT OUT" -- the case that motivated this in the first place, see
+    MIB-000029), and boundary regex over-capture appending trailing content
+    after a clean marker ("[NAME CUT OUT] Specees stch ALPHA_DRACONIAN...").
+    A prefix-similarity check catches all of these without needing to
+    enumerate each corruption, while a legitimate name followed by unrelated
+    OCR noise (e.g. "Zeta Qorul [\"passronrmace") scores far below threshold
+    on its own prefix and is correctly left alone.
+    """
+    if value is None:
+        return None
+
+    cleaned = value.strip()
+
+    if not cleaned:
+        return None
+
+    upper = cleaned.upper()
+
+    for marker in APPLICANT_NAME_MARKERS:
+        prefix = upper[: len(marker)]
+        score = SequenceMatcher(None, prefix, marker).ratio()
+
+        if score >= APPLICANT_MARKER_MIN_SCORE:
+            return None
+
+    return cleaned
+
 
 def normalize_sponsor_id(sponsor: str | None) -> str | None:
     """Normalize an extracted sponsor ID."""
@@ -324,6 +378,7 @@ def normalize_risk_flags(value: str | None) -> str | None:
 
 NORMALIZERS = {
     "case_id": normalize_case_id,
+    "applicant_name": normalize_applicant_name,
     "sponsor_id": normalize_sponsor_id,
     "visa_class": normalize_visa_class,
     "arrival_date": normalize_date,
