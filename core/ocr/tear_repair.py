@@ -77,6 +77,195 @@ SKEW_SAMPLES = 4000
 MIN_SKEW_BASELINE = 50
 
 
+# --- Validated per-row mark detection (replaces the old leftmost_marks path
+# for band offset estimation; see TEAR_REPAIR_TODO.md) ---
+
+# A qualifying mark run's width band, in pixels: thin enough to be a rule
+# stroke rather than a text blob, wide enough not to be a speckle.
+MARK_MIN_WIDTH = 3
+MARK_MAX_WIDTH = 12
+
+# Absolute grey level below which a pixel counts as ink for mark detection.
+MARK_DARKNESS = 180
+
+# A candidate mark must have a similar x (within this many px) in at least
+# this fraction of rows within +/- MARK_CONTINUITY_WINDOW to survive.
+MARK_CONTINUITY_TOLERANCE = 6
+MARK_CONTINUITY_WINDOW = 10
+MARK_CONTINUITY_MIN_FRACTION = 0.5
+
+# Left margin coverage (fraction of rows with a surviving mark) required to
+# trust it outright; below this, the right margin is tried as a fallback and
+# whichever side covers more rows wins. See TEAR_REPAIR_TODO.md item 6 --
+# tested directly on MIB-000030 p2, where the visually-cleaner right edge
+# produced nonsensical shifts and the messier left edge (72.5% coverage)
+# recovered the field the right edge lost.
+MIN_SIDE_COVERAGE = 0.60
+
+# A short band sandwiched between two neighbors that agree with each other
+# but not with it is noise (a hole-punch, a stamp), not a real tear boundary.
+OUTLIER_BAND_MAX_HEIGHT = 40
+OUTLIER_NEIGHBOR_AGREEMENT = 10
+OUTLIER_DEVIATION = 30
+
+# Rows from each end of a band used to compute its local top/bottom edge
+# value for cascade repair, rather than one flat whole-band median.
+EDGE_SAMPLE_ROWS = 15
+
+
+def _row_marks(gray: np.ndarray, side: str) -> np.ndarray:
+    """
+    x of the qualifying thin dark run nearest the given margin on each row.
+
+    Per-row scanning for a thin run (width MARK_MIN_WIDTH..MARK_MAX_WIDTH,
+    absolute intensity < MARK_DARKNESS) rather than connected-components:
+    a vertical border segment touching the page's horizontal top border at a
+    corner merges into one L-shaped blob under connected-components, and a
+    whole-blob width filter wrongly rejects a genuine long line. Per-row
+    scanning has no such blind spot.
+    """
+    height, width = gray.shape
+    margin = int(width * SIDE_FRACTION)
+
+    if side == "left":
+        strip = gray[:, :margin] < MARK_DARKNESS
+    else:
+        strip = gray[:, width - margin:] < MARK_DARKNESS
+
+    marks = np.full(height, np.nan)
+
+    for y in range(height):
+        row = strip[y]
+        xs = np.nonzero(row)[0]
+
+        if not len(xs):
+            continue
+
+        # Split into contiguous runs and keep the first (left) / last (right)
+        # one whose width qualifies.
+        breaks = np.nonzero(np.diff(xs) > 1)[0]
+        run_starts = np.concatenate(([0], breaks + 1))
+        run_ends = np.concatenate((breaks, [len(xs) - 1]))
+
+        run_indices = range(len(run_starts)) if side == "left" else reversed(range(len(run_starts)))
+
+        for i in run_indices:
+            run_width = xs[run_ends[i]] - xs[run_starts[i]] + 1
+
+            if MARK_MIN_WIDTH <= run_width <= MARK_MAX_WIDTH:
+                position = xs[run_starts[i]]
+                marks[y] = float(position if side == "left" else width - margin + position)
+                break
+
+    return marks
+
+
+def _apply_continuity_filter(marks: np.ndarray) -> np.ndarray:
+    """
+    Drop any mark without a similar x in most nearby rows.
+
+    Rejects isolated text characters and other one-off contamination (a
+    stray letter picked up near a text line) while preserving genuine
+    multi-row strokes, which is what a real border or tear edge is.
+    """
+    height = len(marks)
+    filtered = marks.copy()
+
+    for y in range(height):
+        if np.isnan(marks[y]):
+            continue
+
+        low = max(0, y - MARK_CONTINUITY_WINDOW)
+        high = min(height, y + MARK_CONTINUITY_WINDOW + 1)
+        window = marks[low:high]
+        window = window[~np.isnan(window)]
+
+        if len(window) == 0:
+            filtered[y] = np.nan
+            continue
+
+        agreeing = np.sum(np.abs(window - marks[y]) <= MARK_CONTINUITY_TOLERANCE)
+
+        if agreeing / len(window) < MARK_CONTINUITY_MIN_FRACTION:
+            filtered[y] = np.nan
+
+    return filtered
+
+
+def side_marks_and_coverage(gray: np.ndarray, side: str) -> tuple[np.ndarray, float]:
+    """Return continuity-filtered marks for one margin and their row coverage."""
+    marks = _apply_continuity_filter(_row_marks(gray, side))
+    coverage = float(np.sum(~np.isnan(marks))) / len(marks) if len(marks) else 0.0
+
+    return marks, coverage
+
+
+def estimate_offsets_v2(gray: np.ndarray) -> np.ndarray:
+    """
+    Return each scanline's displacement from its own margin's median mark.
+
+    Tracks the left margin first; if its coverage is below MIN_SIDE_COVERAGE
+    the right margin is tried and whichever side covers more rows is used.
+    Do not prefer whichever side "looks cleaner" -- see MIN_SIDE_COVERAGE.
+    """
+    left_marks, left_coverage = side_marks_and_coverage(gray, "left")
+
+    if left_coverage >= MIN_SIDE_COVERAGE:
+        marks = left_marks
+    else:
+        right_marks, right_coverage = side_marks_and_coverage(gray, "right")
+        marks = right_marks if right_coverage > left_coverage else left_marks
+
+    measured = marks[~np.isnan(marks)]
+
+    if not len(measured):
+        return marks
+
+    offsets = marks - float(np.median(measured))
+    offsets[np.abs(offsets) > MAX_SHIFT] = np.nan
+
+    return offsets
+
+
+def clean_outlier_bands(
+    bands: list[tuple[int, int, float]],
+) -> list[tuple[int, int, float]]:
+    """
+    Absorb a short band sandwiched between two agreeing neighbors into its
+    predecessor.
+
+    A hole-punch circle or stamp interrupting a border for a few dozen rows
+    creates a spurious band reading something else entirely (e.g. a leftmost
+    text character). It is noise, not a real tear boundary.
+    """
+    if len(bands) < 3:
+        return bands
+
+    cleaned = [bands[0]]
+
+    for index in range(1, len(bands) - 1):
+        top, bottom, offset = bands[index]
+        prev_offset = cleaned[-1][2]
+        next_offset = bands[index + 1][2]
+
+        is_short = (bottom - top) <= OUTLIER_BAND_MAX_HEIGHT
+        neighbors_agree = abs(prev_offset - next_offset) <= OUTLIER_NEIGHBOR_AGREEMENT
+        this_deviates = (
+            abs(offset - prev_offset) >= OUTLIER_DEVIATION
+            and abs(offset - next_offset) >= OUTLIER_DEVIATION
+        )
+
+        if is_short and neighbors_agree and this_deviates:
+            prev_top, _, prev_offset_value = cleaned[-1]
+            cleaned[-1] = (prev_top, bottom, prev_offset_value)
+        else:
+            cleaned.append((top, bottom, offset))
+
+    cleaned.append(bands[-1])
+
+    return cleaned
+
+
 def _vertical_strokes(gray: np.ndarray) -> np.ndarray:
     """Keep only vertical ink runs, dropping text and horizontal rules."""
     binary = cv2.threshold(
@@ -325,7 +514,7 @@ def corroborated_boundaries(gray: np.ndarray) -> tuple[np.ndarray, list[int]]:
 
 def looks_torn(gray: np.ndarray) -> bool:
     """Return whether a page shows enough band displacement to be worth repairing."""
-    offsets = estimate_offsets(gray)
+    offsets = estimate_offsets_v2(gray)
 
     if not np.any(~np.isnan(offsets)):
         return False
@@ -521,42 +710,183 @@ def align_text_lines(gray: np.ndarray) -> tuple[np.ndarray, int]:
     return aligned, moved
 
 
+def corroborate_band_boundaries(
+    gray: np.ndarray,
+    bands: list[tuple[int, int, float]],
+) -> list[tuple[int, int, float]]:
+    """
+    Merge any band boundary body text does not corroborate.
+
+    The continuity filter in _row_marks/_apply_continuity_filter rejects
+    isolated noise, but a multi-row artefact (a decorative rule, a stamp
+    edge) can still pass it and look like a genuine band split. A real tear
+    moves everything in the band, so the body text shifts by the same amount
+    as the tracked margin mark at the boundary row; an artefact moves only
+    the measurement. This mirrors the old track_border-based
+    corroborated_boundaries check, reapplied to the new detection's band
+    boundaries instead of individual row jumps -- restores the precision
+    that check gave (rejected all 28 spurious candidates on MIB-000003) that
+    plain continuity-filtering alone does not provide, confirmed by a
+    full-training-set regression (-0.14) when this step was left out.
+
+    Unlike the old check, a boundary with nothing to corroborate against (no
+    text on one side) is kept rather than rejected, not treated as
+    equivalent to a disagreement. The old check only ever evaluated a
+    handful of individual jump rows flagged by track_border; segment_bands
+    here produces many more candidate boundaries, most from the blank lower
+    portion of a typical page, and requiring positive evidence for every one
+    of them collapsed the entire page to a single band (confirmed directly:
+    both MIB-000670 p2 and MIB-000030 p2 dropped to 0 bands moved). Only
+    reject a boundary body text actively disagrees with. Tears that fall
+    between text lines, where there is nothing to corroborate against on
+    principle, are handled by the separate align_text_lines candidate
+    instead; see try_tear_repair in page_pipeline.py.
+    """
+    if len(bands) < 2:
+        return bands
+
+    merged: list[tuple[int, int, float]] = [bands[0]]
+
+    for top, bottom, offset in bands[1:]:
+        prev_top, prev_bottom, prev_offset = merged[-1]
+        boundary_row = top  # == prev_bottom, bands are contiguous
+
+        jump = offset - prev_offset
+        shift = text_shift_across(gray, boundary_row)
+        disagrees = shift is not None and abs(shift - jump) > CORROBORATION_TOLERANCE
+
+        if not disagrees:
+            merged.append((top, bottom, offset))
+        else:
+            prev_height = prev_bottom - prev_top
+            this_height = bottom - top
+            total = prev_height + this_height
+            blended_offset = (
+                (prev_offset * prev_height + offset * this_height) / total
+                if total
+                else prev_offset
+            )
+            merged[-1] = (prev_top, bottom, blended_offset)
+
+    return merged
+
+
+def _local_edge_values(
+    gray: np.ndarray,
+    offsets: np.ndarray,
+    top: int,
+    bottom: int,
+) -> tuple[float, float]:
+    """
+    Return a band's own local top-edge and bottom-edge offset.
+
+    A flat whole-band median collapses cascade repair to the same wrong
+    "everything equals one global value" result a single global reference
+    gives, since a flat band's top and bottom are identical. Using the
+    first/last rows' own median instead preserves real internal drift (e.g.
+    a genuinely continuous but slightly rotated border) and lets adjacent
+    bands be chained edge-to-edge instead of centre-to-centre.
+    """
+    segment = offsets[top:bottom]
+    sample = min(EDGE_SAMPLE_ROWS, len(segment) // 2 or len(segment))
+
+    head = segment[:sample]
+    tail = segment[-sample:] if sample else segment
+
+    head = head[~np.isnan(head)]
+    tail = tail[~np.isnan(tail)]
+
+    whole = segment[~np.isnan(segment)]
+    fallback = float(np.median(whole)) if len(whole) else 0.0
+
+    top_value = float(np.median(head)) if len(head) else fallback
+    bottom_value = float(np.median(tail)) if len(tail) else fallback
+
+    return top_value, bottom_value
+
+
+def _cascade_shifts(
+    edge_values: list[tuple[float, float]],
+) -> list[float]:
+    """
+    Return one shift per band, anchored at the most typical (offset closest
+    to zero) band and cascaded edge-to-edge through its neighbors.
+
+    `estimate_offsets_v2` already centres offsets on the page's own median
+    mark position, so the band whose local offset sits closest to zero is,
+    by construction, closest to this page's dominant/majority border
+    position -- the best available proxy for "confirmed undamaged" without
+    per-page manual inspection. Zero shift is assigned there; each other
+    band's shift is chosen so its edge touching an already-corrected
+    neighbor lines up with that neighbor's corrected edge, cascading
+    outward. A flat global reference was the confirmed bug this replaces:
+    averaging over mostly-noise bands (blank page regions, stamps) pulled an
+    undamaged header 25px off its true position.
+    """
+    if not edge_values:
+        return []
+
+    band_medians = [(top + bottom) / 2 for top, bottom in edge_values]
+    anchor = int(np.argmin(np.abs(band_medians)))
+
+    shifts = [0.0] * len(edge_values)
+
+    for i in range(anchor - 1, -1, -1):
+        # band i is above band i+1; i's bottom touches (i+1)'s (corrected) top.
+        next_top_corrected = edge_values[i + 1][0] + shifts[i + 1]
+        shifts[i] = next_top_corrected - edge_values[i][1]
+
+    for i in range(anchor + 1, len(edge_values)):
+        # band i is below band i-1; i's top touches (i-1)'s (corrected) bottom.
+        prev_bottom_corrected = edge_values[i - 1][1] + shifts[i - 1]
+        shifts[i] = prev_bottom_corrected - edge_values[i][0]
+
+    return shifts
+
+
 def repair_tear(gray: np.ndarray) -> tuple[np.ndarray, int]:
     """
-    Undo band displacement, using only text-corroborated tear boundaries.
+    Undo band displacement with per-row mark detection and cascade repair.
 
-    Bands are delimited by boundaries where the body text moved with the
-    border. Everything else is left alone: an unverified boundary that lands
-    inside a text line splits the glyphs and costs more than the tear did.
+    Offsets come from a continuity-filtered per-row mark scan of whichever
+    margin covers more of the page (see estimate_offsets_v2), segmented into
+    bands, cleaned of short noise bands, and snapped off text lines so a
+    boundary never cuts through a glyph. Each band's shift is then chained
+    from its own local top/bottom edge values, anchored at the page's most
+    typical band, rather than pulled toward one flat global reference.
     """
-    positions, boundaries = corroborated_boundaries(gray)
+    offsets = estimate_offsets_v2(gray)
 
-    if not boundaries:
+    if not np.any(~np.isnan(offsets)):
         return gray, 0
 
-    height, width = gray.shape
-    edges = [0] + boundaries + [height]
-
-    bands: list[tuple[int, int, float]] = []
-
-    for index in range(len(edges) - 1):
-        top, bottom = edges[index], edges[index + 1]
-        segment = positions[top:bottom]
-        segment = segment[~np.isnan(segment)]
-
-        if len(segment) >= 5:
-            bands.append((top, bottom, float(np.median(segment))))
+    bands = segment_bands(offsets)
 
     if not bands:
         return gray, 0
 
-    reference = float(np.median([band[2] for band in bands]))
+    bands = clean_outlier_bands(bands)
+    # Corroborate at the raw boundary positions, near wherever the actual
+    # discontinuity is, before snapping moves them into text-free whitespace
+    # gaps -- text_shift_across needs nearby text to correlate against, which
+    # whitespace by definition doesn't have.
+    bands = corroborate_band_boundaries(gray, bands)
+    bands = snap_bands_to_text_gaps(bands, text_rows(gray))
 
+    if not bands:
+        return gray, 0
+
+    edge_values = [
+        _local_edge_values(gray, offsets, top, bottom) for top, bottom, _ in bands
+    ]
+    shifts = _cascade_shifts(edge_values)
+
+    height, width = gray.shape
     repaired = gray.copy()
     moved = 0
 
-    for top, bottom, position in bands:
-        shift = int(round(position - reference))
+    for (top, bottom, _), shift_value in zip(bands, shifts):
+        shift = int(round(shift_value))
 
         if shift == 0 or abs(shift) > MAX_SHIFT:
             continue
